@@ -1,0 +1,432 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: choapplications.chorister.dev
+spec:
+  group: chorister.dev
+  names:
+    kind: ChoApplication
+    listKind: ChoApplicationList
+    plural: choapplications
+    singular: choapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.policy.compliance
+      name: Compliance
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ChoApplication is the Schema for the choapplications API.
+          It represents a product and policy boundary containing one or more domains.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ChoApplicationSpec defines the desired state of ChoApplication.
+            properties:
+              domains:
+                description: domains defines the bounded contexts (DDD) within this
+                  application.
+                items:
+                  description: DomainSpec defines a bounded context within an application.
+                  properties:
+                    consumes:
+                      description: consumes declares dependencies on other domains.
+                      items:
+                        description: ConsumeRef declares a dependency on another domain's
+                          service.
+                        properties:
+                          domain:
+                            type: string
+                          port:
+                            type: integer
+                          services:
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - domain
+                        - port
+                        - services
+                        type: object
+                      type: array
+                    name:
+                      description: name is the domain name (e.g. "payments", "auth").
+                      pattern: ^[a-z][a-z0-9-]*$
+                      type: string
+                    owners:
+                      description: owners is a list of email addresses for domain
+                        owners.
+                      items:
+                        type: string
+                      type: array
+                    sensitivity:
+                      default: internal
+                      description: sensitivity is the data sensitivity level.
+                      enum:
+                      - public
+                      - internal
+                      - confidential
+                      - restricted
+                      type: string
+                    supplies:
+                      description: supplies declares what this domain exposes to others.
+                      properties:
+                        port:
+                          type: integer
+                        services:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - port
+                      - services
+                      type: object
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              links:
+                description: links defines cross-application connections via Gateway
+                  API.
+                items:
+                  description: LinkSpec defines a cross-application link via Gateway
+                    API.
+                  properties:
+                    auth:
+                      description: LinkAuth defines authentication for cross-application
+                        links.
+                      properties:
+                        type:
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    circuitBreaker:
+                      description: LinkCircuitBreaker defines circuit breaker for
+                        a link.
+                      properties:
+                        consecutiveErrors:
+                          type: integer
+                      required:
+                      - consecutiveErrors
+                      type: object
+                    consumers:
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                    name:
+                      type: string
+                    port:
+                      type: integer
+                    rateLimit:
+                      description: LinkRateLimit defines rate limiting for a link.
+                      properties:
+                        requestsPerMinute:
+                          type: integer
+                      required:
+                      - requestsPerMinute
+                      type: object
+                    target:
+                      type: string
+                    targetDomain:
+                      type: string
+                  required:
+                  - consumers
+                  - name
+                  - port
+                  - target
+                  - targetDomain
+                  type: object
+                type: array
+              owners:
+                description: owners is a list of email addresses for application owners.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+              policy:
+                description: policy defines the application-level policy boundary.
+                properties:
+                  archiveRetention:
+                    description: |-
+                      archiveRetention is the minimum archive retention period for stateful resources.
+                      Must be >= 30d. Defaults to 30d.
+                    type: string
+                  auditRetention:
+                    description: auditRetention is the duration to retain audit logs
+                      (e.g. "2y", "90d").
+                    type: string
+                  compliance:
+                    default: essential
+                    description: compliance is the compliance profile for this application.
+                    enum:
+                    - essential
+                    - standard
+                    - regulated
+                    type: string
+                  ha:
+                    description: ha defines the high-availability strategy.
+                    properties:
+                      clusters:
+                        description: clusters defines the primary and failover clusters
+                          (for multi-cluster).
+                        properties:
+                          failover:
+                            type: string
+                          primary:
+                            type: string
+                        required:
+                        - primary
+                        type: object
+                      strategy:
+                        default: single-cluster
+                        description: strategy is the HA strategy.
+                        enum:
+                        - single-cluster
+                        - hot-cold
+                        - active-active
+                        type: string
+                    required:
+                    - strategy
+                    type: object
+                  network:
+                    description: network defines application-level network policy
+                      (egress/ingress ceilings).
+                    properties:
+                      egress:
+                        description: egress defines the application-level egress allowlist.
+                        properties:
+                          allowlist:
+                            description: allowlist is the set of approved external
+                              destinations.
+                            items:
+                              description: EgressTarget is an approved external destination.
+                              properties:
+                                alertOnErrorRate:
+                                  type: string
+                                criticality:
+                                  type: string
+                                expectedLatency:
+                                  type: string
+                                host:
+                                  type: string
+                                port:
+                                  type: integer
+                              required:
+                              - host
+                              - port
+                              type: object
+                            type: array
+                        type: object
+                      ingress:
+                        description: ingress defines the application-level ingress
+                          policy.
+                        properties:
+                          allowAnonymousRoutes:
+                            description: allowAnonymousRoutes permits routes with
+                              auth=none.
+                            type: boolean
+                          allowedIdPs:
+                            description: allowedIdPs lists approved identity providers.
+                            items:
+                              description: IdPReference is a reference to an OIDC
+                                identity provider.
+                              properties:
+                                issuer:
+                                  type: string
+                                jwksUri:
+                                  type: string
+                              required:
+                              - issuer
+                              - jwksUri
+                              type: object
+                            type: array
+                        type: object
+                    type: object
+                  promotion:
+                    description: promotion defines the promotion approval policy.
+                    properties:
+                      allowedRoles:
+                        description: allowedRoles lists roles that can approve promotions.
+                        items:
+                          type: string
+                        minItems: 1
+                        type: array
+                      requireSecurityScan:
+                        description: requireSecurityScan gates promotion on image
+                          scan results.
+                        type: boolean
+                      requireTicketRef:
+                        description: requireTicketRef requires an external ticket
+                          reference.
+                        type: boolean
+                      requiredApprovers:
+                        default: 1
+                        description: requiredApprovers is the number of approvals
+                          needed.
+                        minimum: 1
+                        type: integer
+                    required:
+                    - allowedRoles
+                    - requiredApprovers
+                    type: object
+                  quotas:
+                    description: quotas defines resource quota configuration.
+                    properties:
+                      defaultPerDomain:
+                        description: defaultPerDomain sets the default resource quotas
+                          for each domain namespace.
+                        properties:
+                          cpu:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          memory:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storage:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                        type: object
+                    type: object
+                  sandbox:
+                    description: sandbox defines sandbox lifecycle policy.
+                    properties:
+                      defaultBudgetPerDomain:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: defaultBudgetPerDomain is the default monthly
+                          budget per domain for sandbox costs.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      maxIdleDays:
+                        description: maxIdleDays is the maximum number of days a sandbox
+                          can be idle before auto-destroy.
+                        type: integer
+                    type: object
+                required:
+                - compliance
+                - promotion
+                type: object
+            required:
+            - domains
+            - owners
+            - policy
+            type: object
+          status:
+            description: ChoApplicationStatus defines the observed state of ChoApplication.
+            properties:
+              conditions:
+                description: conditions represent the current state of the ChoApplication.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              domainNamespaces:
+                additionalProperties:
+                  type: string
+                description: domainNamespaces maps domain names to their namespace
+                  names.
+                type: object
+              phase:
+                description: phase is the high-level phase of the application.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

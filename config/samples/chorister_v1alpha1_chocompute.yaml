@@ -1,0 +1,9 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  labels:
+    app.kubernetes.io/name: chorister
+    app.kubernetes.io/managed-by: kustomize
+  name: chocompute-sample
+spec:
+  # TODO(user): Add fields here

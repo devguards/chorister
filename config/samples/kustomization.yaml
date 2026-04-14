@@ -1,0 +1,14 @@
+## Append samples of your project ##
+resources:
+- chorister_v1alpha1_choapplication.yaml
+- chorister_v1alpha1_chocompute.yaml
+- chorister_v1alpha1_chodatabase.yaml
+- chorister_v1alpha1_choqueue.yaml
+- chorister_v1alpha1_chocache.yaml
+- chorister_v1alpha1_chostorage.yaml
+- chorister_v1alpha1_chonetwork.yaml
+- chorister_v1alpha1_chodomainmembership.yaml
+- chorister_v1alpha1_chopromotionrequest.yaml
+- chorister_v1alpha1_chocluster.yaml
+- chorister_v1alpha1_chosandbox.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

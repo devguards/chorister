@@ -1,0 +1,62 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - chorister.dev
+  resources:
+  - choapplications
+  - chocaches
+  - choclusters
+  - chocomputes
+  - chodatabases
+  - chodomainmemberships
+  - chonetworks
+  - chopromotionrequests
+  - choqueues
+  - chosandboxes
+  - chostorages
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - chorister.dev
+  resources:
+  - choapplications/finalizers
+  - chocaches/finalizers
+  - choclusters/finalizers
+  - chocomputes/finalizers
+  - chodatabases/finalizers
+  - chodomainmemberships/finalizers
+  - chonetworks/finalizers
+  - chopromotionrequests/finalizers
+  - choqueues/finalizers
+  - chosandboxes/finalizers
+  - chostorages/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - chorister.dev
+  resources:
+  - choapplications/status
+  - chocaches/status
+  - choclusters/status
+  - chocomputes/status
+  - chodatabases/status
+  - chodomainmemberships/status
+  - chonetworks/status
+  - chopromotionrequests/status
+  - choqueues/status
+  - chosandboxes/status
+  - chostorages/status
+  verbs:
+  - get
+  - patch
+  - update
