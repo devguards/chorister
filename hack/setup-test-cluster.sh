@@ -36,6 +36,28 @@ log() {
 	echo "[$(date +%H:%M:%S)] $*"
 }
 
+retry_run() {
+	local attempts="$1"
+	local delay_seconds="$2"
+	shift 2
+
+	local attempt=1
+	local status=0
+	while true; do
+		if "$@"; then
+			return 0
+		fi
+		status=$?
+		if (( attempt >= attempts )); then
+			return "$status"
+		fi
+		log "Command failed with exit code ${status}; retrying in ${delay_seconds}s (${attempt}/${attempts}): $*"
+		sleep "$delay_seconds"
+		attempt=$((attempt + 1))
+		delay_seconds=$((delay_seconds * 2))
+	done
+}
+
 run() {
 	log "+ $*"
 	if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -77,7 +99,6 @@ kind_cluster_exists() {
 create_kind_cluster() {
 	local kind_config
 	kind_config="$(mktemp)"
-	trap 'rm -f "$kind_config"' RETURN
 
 	cat >"$kind_config" <<EOF
 kind: Cluster
@@ -91,6 +112,7 @@ nodes:
 EOF
 
 	if kind_cluster_exists; then
+		rm -f "$kind_config"
 		log "Kind cluster '$CLUSTER_NAME' already exists"
 		return
 	fi
@@ -101,6 +123,7 @@ EOF
 	fi
 
 	run kind "${args[@]}"
+	rm -f "$kind_config"
 }
 
 wait_for_nodes_ready() {
@@ -108,7 +131,7 @@ wait_for_nodes_ready() {
 }
 
 install_cilium() {
-	run helm repo add cilium https://helm.cilium.io
+	run helm repo add cilium https://helm.cilium.io --force-update
 	run helm repo update
 	run helm upgrade --install cilium cilium/cilium \
 		--kube-context "$(kind_context)" \
@@ -129,7 +152,7 @@ install_cilium() {
 install_gateway_api_crds() {
 	local gateway_api_url
 	gateway_api_url="https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-	run kubectl_ctx apply -f "$gateway_api_url"
+	retry_run 5 2 run kubectl_ctx apply -f "$gateway_api_url"
 }
 
 print_summary() {
@@ -172,8 +195,8 @@ main() {
 	fi
 
 	create_kind_cluster
-	wait_for_nodes_ready
 	install_cilium
+	wait_for_nodes_ready
 	install_gateway_api_crds
 	print_summary
 }
