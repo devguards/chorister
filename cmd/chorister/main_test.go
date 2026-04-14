@@ -38,11 +38,18 @@ func executeCmd(args ...string) (string, error) {
 }
 
 func TestCLI_ApplyRefusesProductionNamespace(t *testing.T) {
-	t.Skip("awaiting Phase 2: apply command production guard implementation")
-
 	_, err := executeCmd("apply", "--domain", "payments", "--sandbox", "production")
 	if err == nil {
 		t.Fatal("expected apply to refuse production target, got nil error")
+	}
+	if !strings.Contains(err.Error(), "production") {
+		t.Fatalf("error should mention 'production', got: %s", err.Error())
+	}
+
+	// Also test "prod"
+	_, err = executeCmd("apply", "--domain", "payments", "--sandbox", "prod")
+	if err == nil {
+		t.Fatal("expected apply to refuse 'prod' target, got nil error")
 	}
 	if !strings.Contains(err.Error(), "production") {
 		t.Fatalf("error should mention 'production', got: %s", err.Error())

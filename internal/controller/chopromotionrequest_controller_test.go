@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,56 +34,6 @@ import (
 )
 
 var _ = Describe("ChoPromotionRequest Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-
-		ctx := context.Background()
-
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
-		}
-		chopromotionrequest := &choristerv1alpha1.ChoPromotionRequest{}
-
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind ChoPromotionRequest")
-			err := k8sClient.Get(ctx, typeNamespacedName, chopromotionrequest)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &choristerv1alpha1.ChoPromotionRequest{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &choristerv1alpha1.ChoPromotionRequest{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance ChoPromotionRequest")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &ChoPromotionRequestReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
-	})
 
 	// -----------------------------------------------------------------------
 	// 1A.10 — Promotion lifecycle (envtest)
@@ -88,66 +41,496 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 
 	Context("1A.10 — Promotion lifecycle", func() {
 		It("should follow status lifecycle: Pending → Approved → Executing → Completed", func() {
-			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+			ctx := context.Background()
+
+			// Create the ChoApplication that the promotion references
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-lifecycle-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"domain-admin", "org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "payments"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			// Ensure production namespace exists
+			prodNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-lifecycle-app-payments"},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: prodNs.Name}, &corev1.Namespace{})
+			if errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, prodNs)).To(Succeed())
+			}
+
+			// Ensure sandbox namespace exists
+			sandboxNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-lifecycle-app-payments-sandbox-alice"},
+			}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: sandboxNs.Name}, &corev1.Namespace{})
+			if errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, sandboxNs)).To(Succeed())
+			}
+
+			// Create a ChoCompute in the sandbox namespace to be promoted
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api-server",
+					Namespace: sandboxNs.Name,
+				},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "promo-lifecycle-app",
+					Domain:      "payments",
+					Image:       "nginx:1.25",
+					Replicas:    int32Ptr(2),
+					Port:        int32Ptr(8080),
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
 
 			pr := &choristerv1alpha1.ChoPromotionRequest{
-				ObjectMeta: metav1.ObjectMeta{Name: "promo-lifecycle", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-lifecycle",
+					Namespace: "default",
+				},
 				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
-					Application: "myapp",
+					Application: "promo-lifecycle-app",
 					Domain:      "payments",
 					Sandbox:     "alice",
 					RequestedBy: "alice@example.com",
 				},
 			}
 			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
-			defer func() { _ = k8sClient.Delete(ctx, pr) }()
 
 			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
 			// Initial reconcile → Pending
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
 			Expect(pr.Status.Phase).To(Equal("Pending"))
+
+			// Add an approval
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{
+					Approver:   "admin@example.com",
+					Role:       "org-admin",
+					ApprovedAt: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile → Approved → Executing → Completed
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Completed"))
+
+			// Verify the compute resource was copied to production namespace
+			prodCompute := &choristerv1alpha1.ChoCompute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "api-server",
+				Namespace: "promo-lifecycle-app-payments",
+			}, prodCompute)).To(Succeed())
+			Expect(prodCompute.Spec.Image).To(Equal("nginx:1.25"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		})
 
 		It("should stay Pending until required approvals met", func() {
-			Skip("awaiting Phase 8.3: Approval gate enforcement")
+			ctx := context.Background()
 
-			// Create promotion with policy requiring 2 approvers → 1 approval → still Pending
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-approval-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 2,
+							AllowedRoles:      []string{"domain-admin", "org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "auth"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-insufficient",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-approval-app",
+					Domain:      "auth",
+					Sandbox:     "bob",
+					RequestedBy: "bob@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Initial → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add only 1 approval (need 2)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{
+					Approver:   "admin1@example.com",
+					Role:       "org-admin",
+					ApprovedAt: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile → still Pending
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Pending"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		})
 
 		It("should reject approval from disallowed role", func() {
-			Skip("awaiting Phase 8.3: Approval gate enforcement")
+			ctx := context.Background()
 
-			// Approval from disallowed role does not satisfy policy
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-role-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "billing"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-wrong-role",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-role-app",
+					Domain:      "billing",
+					Sandbox:     "carol",
+					RequestedBy: "carol@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Initial → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add approval from disallowed role "developer"
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{
+					Approver:   "dev@example.com",
+					Role:       "developer", // not in allowedRoles
+					ApprovedAt: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile → still Pending (developer not counted)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Pending"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		})
 
 		It("should copy compiled manifests on approval", func() {
-			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+			ctx := context.Background()
 
-			// Production namespace updated on approval
+			// Create app with 1 required approver
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-copy-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "api"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			// Create namespaces
+			for _, nsName := range []string{"promo-copy-app-api", "promo-copy-app-api-sandbox-dev"} {
+				ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, &corev1.Namespace{})
+				if errors.IsNotFound(err) {
+					Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+				}
+			}
+
+			// Create resources in sandbox
+			sandboxCompute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "web",
+					Namespace: "promo-copy-app-api-sandbox-dev",
+				},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "promo-copy-app",
+					Domain:      "api",
+					Image:       "myapp:v2",
+					Replicas:    int32Ptr(3),
+					Port:        int32Ptr(8080),
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandboxCompute)).To(Succeed())
+
+			// Create promotion request with approval already in place
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-copy-test",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-copy-app",
+					Domain:      "api",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add approval
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile through full lifecycle
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify prod has the resource
+			prodCompute := &choristerv1alpha1.ChoCompute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "web",
+				Namespace: "promo-copy-app-api",
+			}, prodCompute)).To(Succeed())
+			Expect(prodCompute.Spec.Image).To(Equal("myapp:v2"))
+			Expect(*prodCompute.Spec.Replicas).To(Equal(int32(3)))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		})
 
 		It("should store diff and compiled revision in request status", func() {
-			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+			ctx := context.Background()
 
-			// request/status captures resource diff and compiledWithRevision
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-rev-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "data"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			// Create namespaces
+			for _, nsName := range []string{"promo-rev-app-data", "promo-rev-app-data-sandbox-rev"} {
+				ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, &corev1.Namespace{})
+				if errors.IsNotFound(err) {
+					Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+				}
+			}
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-rev-test",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application:          "promo-rev-app",
+					Domain:               "data",
+					Sandbox:              "rev",
+					RequestedBy:          "dev@example.com",
+					CompiledWithRevision: "v1.2.3",
+					Diff:                 "Added: Deployment/worker",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Approve and complete
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.CompiledWithRevision).To(Equal("v1.2.3"))
+			Expect(pr.Spec.Diff).To(Equal("Added: Deployment/worker"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		})
 
 		It("should block promotion when domain is degraded", func() {
 			Skip("awaiting Phase 15.3: Service health baseline and incident response")
-
-			// Degraded domain → promotion rejected
 		})
 
 		It("should block promotion on critical image CVE", func() {
 			Skip("awaiting Phase 14.1: Image scanning before promotion")
-
-			// Critical CVE → promotion blocked
 		})
 	})
 })
+
+func int32Ptr(i int32) *int32 { return &i }
+
+// cleanupNamespaces is a helper to clean up namespaces created during tests.
+func cleanupNamespaces(ctx context.Context, names ...string) {
+	for _, name := range names {
+		ns := &corev1.Namespace{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, ns)
+		if err == nil {
+			_ = k8sClient.Delete(ctx, ns)
+		}
+	}
+}
+
+// ensureNamespaceExists creates a namespace if it doesn't exist.
+func ensureNamespaceExists(ctx context.Context, name string) error {
+	ns := &corev1.Namespace{}
+	err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, ns)
+	if errors.IsNotFound(err) {
+		ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		return k8sClient.Create(ctx, ns)
+	}
+	return err
+}
+
+// listChoComputes lists all ChoCompute resources in a namespace.
+func listChoComputes(ctx context.Context, namespace string) (*choristerv1alpha1.ChoComputeList, error) {
+	list := &choristerv1alpha1.ChoComputeList{}
+	err := k8sClient.List(ctx, list, client.InNamespace(namespace))
+	return list, err
+}
+
+// printResources is a debug helper to dump resources in a namespace.
+func printResources(ctx context.Context, namespace string) {
+	list, err := listChoComputes(ctx, namespace)
+	if err != nil {
+		fmt.Printf("  error listing computes in %s: %v\n", namespace, err)
+		return
+	}
+	for _, c := range list.Items {
+		fmt.Printf("  ChoCompute: %s/%s image=%s\n", c.Namespace, c.Name, c.Spec.Image)
+	}
+}

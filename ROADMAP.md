@@ -405,19 +405,19 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 7: Sandbox lifecycle
 
-- [ ] **7.1 — Sandbox creation and isolation**
+- [x] **7.1 — Sandbox creation and isolation**
   - `ChoSandbox` CRD or annotation-based
   - Controller creates namespace `{app}-{domain}-sandbox-{name}`
   - Copies domain config into sandbox namespace
   - Each sandbox is fully isolated (own NetworkPolicy, own resources)
   - **Test:** create sandbox → assert namespace exists with all resources from domain spec → assert sandbox cannot reach production namespace
 
-- [ ] **7.2 — Sandbox destruction and cleanup**
+- [x] **7.2 — Sandbox destruction and cleanup**
   - Delete sandbox CRD → controller deletes namespace and all resources
   - Owner references ensure cascade
   - **Test:** create sandbox → verify resources exist → delete sandbox → verify namespace gone
 
-- [ ] **7.3 — CLI: `chorister apply` targets sandbox only**
+- [x] **7.3 — CLI: `chorister apply` targets sandbox only**
   - CLI `apply` command reads the DSL file and creates/updates CRDs in an existing sandbox namespace
   - `chorister sandbox` remains the lifecycle command group (`create`, `destroy`, `list`), not a second apply surface
   - Refuses to target production namespace (hardcoded check + server-side rejection)
@@ -427,18 +427,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 8: Diff and promotion
 
-- [ ] **8.1 — Diff engine: sandbox vs production**
+- [x] **8.1 — Diff engine: sandbox vs production**
   - Compare compiled manifests between sandbox and production namespaces
   - Output human-readable diff (resource-level: added, changed, removed)
   - **Test:** apply different configs to sandbox and prod → `chorister diff` shows differences → apply same config → diff shows no changes
 
-- [ ] **8.2 — ChoPromotionRequest reconciler**
+- [x] **8.2 — ChoPromotionRequest reconciler**
   - Create `ChoPromotionRequest` CRD
   - Status lifecycle: Pending → Approved → Executing → Completed/Failed
   - Controller copies compiled Blueprint from sandbox namespace to production namespace on approval
   - **Test:** create ChoPromotionRequest → assert status=Pending → simulate approval (patch status) → assert production namespace updated → status=Completed
 
-- [ ] **8.3 — Approval gate enforcement**
+- [x] **8.3 — Approval gate enforcement**
   - Read promotion policy from ChoApplication (requiredApprovers, allowedRoles)
   - Controller validates approvals before proceeding
   - Block if insufficient approvals

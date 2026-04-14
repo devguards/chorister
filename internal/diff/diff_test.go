@@ -42,25 +42,29 @@ func buildResource(name, kind, namespace string, fields map[string]interface{}) 
 }
 
 func TestDiff_Added(t *testing.T) {
-	t.Skip("awaiting Phase 8.1: Diff engine — sandbox vs production")
-
-	// Resource in sandbox but not production → shows "added"
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
 			"replicas": int64(3),
 		}),
 	}
-	production := []*unstructured.Unstructured{} // empty
+	production := []*unstructured.Unstructured{}
 
-	_, _ = sandbox, production
-	// TODO: Call diff engine
-	// Assert result contains one entry: kind=Deployment, name=api, action=added
+	result := Compare(sandbox, production)
+	if len(result.Diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(result.Diffs))
+	}
+	if result.Diffs[0].Action != ActionAdded {
+		t.Errorf("expected action Added, got %s", result.Diffs[0].Action)
+	}
+	if result.Diffs[0].Kind != "Deployment" {
+		t.Errorf("expected kind Deployment, got %s", result.Diffs[0].Kind)
+	}
+	if result.Diffs[0].Name != "api" {
+		t.Errorf("expected name api, got %s", result.Diffs[0].Name)
+	}
 }
 
 func TestDiff_Removed(t *testing.T) {
-	t.Skip("awaiting Phase 8.1: Diff engine — sandbox vs production")
-
-	// Resource in production but not sandbox → shows "removed"
 	sandbox := []*unstructured.Unstructured{}
 	production := []*unstructured.Unstructured{
 		buildResource("legacy-worker", "Deployment", "myapp-payments", map[string]interface{}{
@@ -68,15 +72,19 @@ func TestDiff_Removed(t *testing.T) {
 		}),
 	}
 
-	_, _ = sandbox, production
-	// TODO: Call diff engine
-	// Assert result contains one entry: kind=Deployment, name=legacy-worker, action=removed
+	result := Compare(sandbox, production)
+	if len(result.Diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(result.Diffs))
+	}
+	if result.Diffs[0].Action != ActionRemoved {
+		t.Errorf("expected action Removed, got %s", result.Diffs[0].Action)
+	}
+	if result.Diffs[0].Name != "legacy-worker" {
+		t.Errorf("expected name legacy-worker, got %s", result.Diffs[0].Name)
+	}
 }
 
 func TestDiff_Changed(t *testing.T) {
-	t.Skip("awaiting Phase 8.1: Diff engine — sandbox vs production")
-
-	// Same resource, field differs → shows field-level diff
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
 			"replicas": int64(5),
@@ -88,15 +96,29 @@ func TestDiff_Changed(t *testing.T) {
 		}),
 	}
 
-	_, _ = sandbox, production
-	// TODO: Call diff engine
-	// Assert result contains one entry: kind=Deployment, name=api, action=changed, field=spec.replicas
+	result := Compare(sandbox, production)
+	if len(result.Diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(result.Diffs))
+	}
+	if result.Diffs[0].Action != ActionChanged {
+		t.Errorf("expected action Changed, got %s", result.Diffs[0].Action)
+	}
+	if len(result.Diffs[0].Fields) == 0 {
+		t.Error("expected changed fields to be non-empty")
+	}
+	// Should contain spec.replicas
+	found := false
+	for _, f := range result.Diffs[0].Fields {
+		if f == "spec.replicas" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected field spec.replicas in changed fields, got %v", result.Diffs[0].Fields)
+	}
 }
 
 func TestDiff_NoDifferences(t *testing.T) {
-	t.Skip("awaiting Phase 8.1: Diff engine — sandbox vs production")
-
-	// Identical resources → empty result
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
 			"replicas": int64(3),
@@ -108,14 +130,13 @@ func TestDiff_NoDifferences(t *testing.T) {
 		}),
 	}
 
-	_, _ = sandbox, production
-	// TODO: Call diff engine, assert empty result
+	result := Compare(sandbox, production)
+	if len(result.Diffs) != 0 {
+		t.Fatalf("expected 0 diffs, got %d: %+v", len(result.Diffs), result.Diffs)
+	}
 }
 
 func TestDiff_RenameShowsRemoveAndAdd(t *testing.T) {
-	t.Skip("awaiting Phase 8.1: Diff engine — sandbox vs production")
-
-	// Resource renamed: old name in prod, new name in sandbox → remove + add
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api-v2", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
 			"replicas": int64(3),
@@ -127,17 +148,31 @@ func TestDiff_RenameShowsRemoveAndAdd(t *testing.T) {
 		}),
 	}
 
-	_, _ = sandbox, production
-	// TODO: Call diff engine
-	// Assert result contains two entries: api-v1 removed, api-v2 added
+	result := Compare(sandbox, production)
+	if len(result.Diffs) != 2 {
+		t.Fatalf("expected 2 diffs (remove+add), got %d: %+v", len(result.Diffs), result.Diffs)
+	}
+	hasAdded := false
+	hasRemoved := false
+	for _, d := range result.Diffs {
+		if d.Action == ActionAdded && d.Name == "api-v2" {
+			hasAdded = true
+		}
+		if d.Action == ActionRemoved && d.Name == "api-v1" {
+			hasRemoved = true
+		}
+	}
+	if !hasAdded {
+		t.Error("expected api-v2 to show as Added")
+	}
+	if !hasRemoved {
+		t.Error("expected api-v1 to show as Removed")
+	}
 }
 
 func TestDiff_CompilationRevisionChange(t *testing.T) {
 	t.Skip("awaiting Phase 19.3: Compilation stability tracking")
 
-	// Same DSL, different controller revision → surfaces compilation diff
-	// This tests that the diff engine can detect when compiled output changes
-	// due to a controller upgrade even when the user's DSL has not changed.
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
 			"replicas": int64(3),
@@ -152,7 +187,53 @@ func TestDiff_CompilationRevisionChange(t *testing.T) {
 	sandboxRevision := "v2.0.0"
 	productionRevision := "v1.0.0"
 
-	_, _, _, _ = sandbox, production, sandboxRevision, productionRevision
-	// TODO: Call diff engine with revision info
-	// Assert that compilation revision difference is surfaced
+	result := CompareWithRevisions(sandbox, production, sandboxRevision, productionRevision)
+	if result.SandboxRevision != sandboxRevision {
+		t.Errorf("expected sandbox revision %s, got %s", sandboxRevision, result.SandboxRevision)
+	}
+	if result.ProductionRevision != productionRevision {
+		t.Errorf("expected production revision %s, got %s", productionRevision, result.ProductionRevision)
+	}
+}
+
+func TestDiff_FormatOutput(t *testing.T) {
+	result := Result{
+		Diffs: []ResourceDiff{
+			{Kind: "Deployment", Name: "api", Action: ActionAdded},
+			{Kind: "Deployment", Name: "worker", Action: ActionChanged, Fields: []string{"spec.replicas"}},
+			{Kind: "Service", Name: "legacy", Action: ActionRemoved},
+		},
+	}
+
+	output := Format(result)
+	if output == "" {
+		t.Fatal("expected non-empty formatted output")
+	}
+
+	for _, want := range []string{"Added", "Changed", "Removed"} {
+		if !contains(output, want) {
+			t.Errorf("formatted output should contain %q, got:\n%s", want, output)
+		}
+	}
+}
+
+func TestDiff_FormatEmpty(t *testing.T) {
+	result := Result{}
+	output := Format(result)
+	if !contains(output, "No differences") {
+		t.Errorf("expected 'No differences' message, got: %s", output)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && containsHelper(s, substr)
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

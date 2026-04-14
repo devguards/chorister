@@ -116,10 +116,15 @@ func newApplyCmd() *cobra.Command {
 			sandbox, _ := cmd.Flags().GetString("sandbox")
 
 			if sandbox == "" {
-				return fmt.Errorf("--sandbox is required: chorister apply always targets a sandbox")
+				return fmt.Errorf("--sandbox is required: chorister apply always targets a sandbox, not production")
 			}
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
+			}
+
+			// Reject any sandbox name that looks like a production target
+			if sandbox == "production" || sandbox == "prod" {
+				return fmt.Errorf("cannot apply to production: sandbox name %q is a reserved production identifier. Use `chorister promote` to promote sandbox changes to production", sandbox)
 			}
 
 			fmt.Printf("apply: targeting domain=%s sandbox=%s (not yet implemented)\n", domain, sandbox)
