@@ -73,6 +73,7 @@ rules:
   - choqueues
   - chosandboxes
   - chostorages
+  - chovulnerabilityreports
   verbs:
   - create
   - delete
@@ -111,10 +112,37 @@ rules:
   - choqueues/status
   - chosandboxes/status
   - chostorages/status
+  - chovulnerabilityreports/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - cilium.io
+  resources:
+  - ciliumenvoyconfigs
+  - ciliumnetworkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  - referencegrants
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:

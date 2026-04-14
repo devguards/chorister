@@ -368,8 +368,6 @@ func TestValidateEgressWildcard_Specific(t *testing.T) {
 }
 
 func TestValidateEgressUnapprovedDestination(t *testing.T) {
-	t.Skip("awaiting Phase 13.1: Egress allowlist enforcement")
-
 	appPolicy := choristerv1alpha1.ApplicationPolicy{
 		Compliance: "essential",
 		Promotion: choristerv1alpha1.PromotionPolicy{
@@ -395,8 +393,16 @@ func TestValidateEgressUnapprovedDestination(t *testing.T) {
 		},
 	}
 
-	_, _ = appPolicy, network
-	// TODO: Assert compile error: evil.example.com not in application allowlist
+	errs := ValidateEgressAllowedDestinations(network, appPolicy)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for unapproved egress destination, got none")
+	}
+	if !contains(errs[0], "evil.example.com") {
+		t.Fatalf("expected offending host in error, got: %v", errs)
+	}
+	if !contains(errs[0], "api.stripe.com") {
+		t.Fatalf("expected approved host list in error, got: %v", errs)
+	}
 }
 
 // --- Compliance ---

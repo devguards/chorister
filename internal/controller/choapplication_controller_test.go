@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -423,6 +424,56 @@ var _ = Describe("ChoApplication Controller", func() {
 			Expect(lr.Spec.Limits[0].Default).To(HaveKey(corev1.ResourceMemory))
 			Expect(lr.Spec.Limits[0].DefaultRequest).To(HaveKey(corev1.ResourceCPU))
 			Expect(lr.Spec.Limits[0].DefaultRequest).To(HaveKey(corev1.ResourceMemory))
+		})
+
+		It("should create periodic vulnerability scan CronJob and report for standard compliance", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "scan-test-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "scan-test-app-payments"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: app.Name,
+					Domain:      "payments",
+					Image:       "registry.example.com/high-risk:1.0",
+					Replicas:    int32Ptr(1),
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			cronJob := &batchv1.CronJob{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "vulnerability-scan", Namespace: "scan-test-app-payments"}, cronJob)).To(Succeed())
+			Expect(cronJob.Spec.Schedule).To(Equal("0 3 * * *"))
+
+			report := &choristerv1alpha1.ChoVulnerabilityReport{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "scan-test-app-payments-vulnerability-report", Namespace: "default"}, report)).To(Succeed())
+			Expect(report.Status.Scanner).NotTo(BeEmpty())
+			Expect(report.Spec.Images).To(ContainElement("registry.example.com/high-risk:1.0"))
 		})
 	})
 })

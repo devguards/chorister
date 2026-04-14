@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ---------------------------------------------------------------------------
@@ -309,8 +310,6 @@ func TestCompileStorage_FilePVC(t *testing.T) {
 // --- ChoNetwork compilation ---
 
 func TestCompileNetwork_IngressHTTPRoute(t *testing.T) {
-	t.Skip("awaiting Phase 13.2: Ingress with JWT auth requirement")
-
 	network := &choristerv1alpha1.ChoNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "public-api", Namespace: "myapp-payments"},
 		Spec: choristerv1alpha1.ChoNetworkSpec{
@@ -330,13 +329,25 @@ func TestCompileNetwork_IngressHTTPRoute(t *testing.T) {
 		},
 	}
 
-	_ = network
-	// TODO: Assert Gateway API HTTPRoute manifest
+	route := CompileIngressHTTPRoute(network)
+	if route.GetKind() != "HTTPRoute" {
+		t.Fatalf("expected HTTPRoute, got %s", route.GetKind())
+	}
+	if route.GetName() != "public-api-ingress" {
+		t.Fatalf("expected route name public-api-ingress, got %s", route.GetName())
+	}
+	if route.GetAnnotations()["chorister.dev/jwt-issuer"] != "https://auth.example.com" {
+		t.Fatalf("expected JWT issuer annotation, got %v", route.GetAnnotations())
+	}
+	spec := getSpec(t, route)
+	rules := spec["rules"].([]interface{})
+	backendRefs := rules[0].(map[string]interface{})["backendRefs"].([]interface{})
+	if backendRefs[0].(map[string]interface{})["port"].(int) != 443 {
+		t.Fatalf("expected backend port 443, got %v", backendRefs[0])
+	}
 }
 
 func TestCompileNetwork_EgressCiliumPolicy(t *testing.T) {
-	t.Skip("awaiting Phase 13.1: Egress allowlist enforcement")
-
 	network := &choristerv1alpha1.ChoNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "external", Namespace: "myapp-payments"},
 		Spec: choristerv1alpha1.ChoNetworkSpec{
@@ -348,14 +359,60 @@ func TestCompileNetwork_EgressCiliumPolicy(t *testing.T) {
 		},
 	}
 
-	_ = network
-	// TODO: Assert CiliumNetworkPolicy with FQDN rules
+	policy := CompileEgressCiliumPolicy(network)
+	if policy.GetKind() != "CiliumNetworkPolicy" {
+		t.Fatalf("expected CiliumNetworkPolicy, got %s", policy.GetKind())
+	}
+	spec := getSpec(t, policy)
+	egress := spec["egress"].([]interface{})
+	if len(egress) < 2 {
+		t.Fatalf("expected DNS plus allowlist rules, got %d", len(egress))
+	}
+	allowRule := egress[1].(map[string]interface{})
+	toFQDNs := allowRule["toFQDNs"].([]interface{})
+	if toFQDNs[0].(map[string]interface{})["matchName"] != "api.stripe.com" {
+		t.Fatalf("expected api.stripe.com allowlist, got %v", toFQDNs)
+	}
 }
 
 func TestCompileNetwork_CrossApplicationLink(t *testing.T) {
-	t.Skip("awaiting Phase 13.3: Cross-application links via Gateway API")
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "consumer-app"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners: []string{"owner@example.com"},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "standard",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+			},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+		},
+	}
+	link := choristerv1alpha1.LinkSpec{
+		Name:         "auth-api",
+		Target:       "platform-app",
+		TargetDomain: "auth",
+		Port:         8443,
+		Consumers:    []string{"payments"},
+		Auth:         &choristerv1alpha1.LinkAuth{Type: "jwt"},
+		RateLimit:    &choristerv1alpha1.LinkRateLimit{RequestsPerMinute: 120},
+	}
 
-	// TODO: Assert link resource → HTTPRoute + ReferenceGrant + CiliumEnvoyConfig + blocking NetworkPolicy
+	artifacts := CompileCrossApplicationLink(app, link, "payments")
+	if artifacts.HTTPRoute == nil || artifacts.ReferenceGrant == nil || artifacts.CiliumEnvoyConfig == nil || artifacts.CiliumPolicy == nil || artifacts.DirectDenyPolicy == nil {
+		t.Fatal("expected all link artifacts to be generated")
+	}
+	if artifacts.HTTPRoute.GetNamespace() != "consumer-app-payments" {
+		t.Fatalf("expected consumer namespace, got %s", artifacts.HTTPRoute.GetNamespace())
+	}
+	if artifacts.ReferenceGrant.GetNamespace() != "platform-app-auth" {
+		t.Fatalf("expected supplier namespace, got %s", artifacts.ReferenceGrant.GetNamespace())
+	}
+	if artifacts.CiliumEnvoyConfig.GetAnnotations()["chorister.dev/link-auth-type"] != "jwt" {
+		t.Fatalf("expected link auth annotation, got %v", artifacts.CiliumEnvoyConfig.GetAnnotations())
+	}
+	if artifacts.DirectDenyPolicy.Name == "" {
+		t.Fatal("expected direct deny policy to be named")
+	}
 }
 
 // --- Table-driven edge cases ---
@@ -416,3 +473,12 @@ func TestCompileCompute_EdgeCases(t *testing.T) {
 }
 
 func int32Ptr(v int32) *int32 { return &v }
+
+func getSpec(t *testing.T, obj *unstructured.Unstructured) map[string]interface{} {
+	t.Helper()
+	spec, ok := obj.Object["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected spec map, got %T", obj.Object["spec"])
+	}
+	return spec
+}

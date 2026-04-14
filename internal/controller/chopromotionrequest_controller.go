@@ -30,12 +30,14 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/scanning"
 )
 
 // ChoPromotionRequestReconciler reconciles a ChoPromotionRequest object
 type ChoPromotionRequestReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme  *runtime.Scheme
+	Scanner scanning.Scanner
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chopromotionrequests,verbs=get;list;watch;create;update;patch;delete
@@ -46,6 +48,8 @@ type ChoPromotionRequestReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=choqueues,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocaches,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports/status,verbs=get;update;patch
 
 // Reconcile drives the promotion request through its lifecycle:
 // Pending → Approved → Executing → Completed/Failed
@@ -113,6 +117,16 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 
 		if validApprovals >= required {
+			if securityScanRequired(app) {
+				blocked, err := r.runPromotionSecurityScan(ctx, pr)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				if blocked {
+					return ctrl.Result{}, nil
+				}
+			}
+
 			pr.Status.Phase = "Approved"
 			setCondition(&pr.Status.Conditions, metav1.Condition{
 				Type:               "Approved",
@@ -369,6 +383,97 @@ func isRoleAllowed(role string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+func (r *ChoPromotionRequestReconciler) getScanner() scanning.Scanner {
+	if r.Scanner != nil {
+		return r.Scanner
+	}
+	return scanning.NewDefaultScanner()
+}
+
+func securityScanRequired(app *choristerv1alpha1.ChoApplication) bool {
+	if app.Spec.Policy.Promotion.RequireSecurityScan {
+		return true
+	}
+	return app.Spec.Policy.Compliance == "standard" || app.Spec.Policy.Compliance == "regulated"
+}
+
+func (r *ChoPromotionRequestReconciler) runPromotionSecurityScan(ctx context.Context, pr *choristerv1alpha1.ChoPromotionRequest) (bool, error) {
+	sandboxNs := SandboxNamespace(pr.Spec.Application, pr.Spec.Domain, pr.Spec.Sandbox)
+	computeList := &choristerv1alpha1.ChoComputeList{}
+	if err := r.List(ctx, computeList, client.InNamespace(sandboxNs)); err != nil {
+		return false, fmt.Errorf("list sandbox images for scan: %w", err)
+	}
+
+	images := uniqueImagesFromComputes(computeList.Items)
+	result, err := r.getScanner().ScanImages(ctx, images)
+	if err != nil {
+		return false, fmt.Errorf("scan images: %w", err)
+	}
+
+	report := &choristerv1alpha1.ChoVulnerabilityReport{}
+	key := types.NamespacedName{Name: pr.Name + "-scan", Namespace: pr.Namespace}
+	if err := r.Get(ctx, key, report); err != nil {
+		if !errors.IsNotFound(err) {
+			return false, err
+		}
+		report = &choristerv1alpha1.ChoVulnerabilityReport{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Spec: choristerv1alpha1.ChoVulnerabilityReportSpec{
+				Application: pr.Spec.Application,
+				Domain:      pr.Spec.Domain,
+				Trigger:     "promotion",
+				TargetRef:   pr.Name,
+				Images:      images,
+			},
+		}
+		if err := r.Create(ctx, report); err != nil {
+			return false, err
+		}
+		if err := r.Get(ctx, key, report); err != nil {
+			return false, err
+		}
+	} else {
+		report.Spec.Images = images
+		report.Spec.Application = pr.Spec.Application
+		report.Spec.Domain = pr.Spec.Domain
+		report.Spec.Trigger = "promotion"
+		report.Spec.TargetRef = pr.Name
+		if err := r.Update(ctx, report); err != nil {
+			return false, err
+		}
+	}
+
+	now := metav1.Now()
+	report.Status.Scanner = result.Scanner
+	report.Status.CriticalCount = result.CriticalCount
+	report.Status.Findings = result.Findings
+	report.Status.ScannedAt = &now
+	if result.CriticalCount > 0 {
+		report.Status.Phase = "Blocked"
+		setCondition(&report.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CriticalFindings", Message: "Promotion blocked by critical image vulnerabilities"})
+		if err := r.Status().Update(ctx, report); err != nil {
+			return false, err
+		}
+
+		pr.Status.Phase = "Rejected"
+		setCondition(&pr.Status.Conditions, metav1.Condition{
+			Type:               "Rejected",
+			Status:             metav1.ConditionTrue,
+			Reason:             "ImageScanFailed",
+			Message:            "Promotion blocked by critical image vulnerabilities",
+			ObservedGeneration: pr.Generation,
+		})
+		if err := r.Status().Update(ctx, pr); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	report.Status.Phase = "Passed"
+	setCondition(&report.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "ScanPassed", Message: "Promotion scan completed without critical findings"})
+	return false, r.Status().Update(ctx, report)
 }
 
 // SetupWithManager sets up the controller with the Manager.

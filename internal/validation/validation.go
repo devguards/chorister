@@ -170,6 +170,38 @@ func ValidateEgressWildcard(network *choristerv1alpha1.ChoNetwork) []string {
 	return nil
 }
 
+// ValidateEgressAllowedDestinations checks that network egress destinations are approved by the application policy.
+func ValidateEgressAllowedDestinations(network *choristerv1alpha1.ChoNetwork, appPolicy choristerv1alpha1.ApplicationPolicy) []string {
+	if network.Spec.Egress == nil || len(network.Spec.Egress.Allowlist) == 0 {
+		return nil
+	}
+	if appPolicy.Network == nil || appPolicy.Network.Egress == nil || len(appPolicy.Network.Egress.Allowlist) == 0 {
+		return nil
+	}
+
+	approved := make(map[string]struct{}, len(appPolicy.Network.Egress.Allowlist))
+	allowedHosts := make([]string, 0, len(appPolicy.Network.Egress.Allowlist))
+	for _, target := range appPolicy.Network.Egress.Allowlist {
+		approved[target.Host] = struct{}{}
+		allowedHosts = append(allowedHosts, target.Host)
+	}
+
+	var errs []string
+	for _, destination := range network.Spec.Egress.Allowlist {
+		if _, ok := approved[destination]; ok {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf(
+			"ChoNetwork %q: egress destination %q is not in the application's approved allowlist. Allowed: %s",
+			network.Name,
+			destination,
+			strings.Join(allowedHosts, ", "),
+		))
+	}
+
+	return errs
+}
+
 // ValidateComplianceEscalation checks domain sensitivity doesn't weaken app compliance.
 // Compliance levels: essential < standard < regulated
 // Sensitivity levels: public < internal < confidential < restricted

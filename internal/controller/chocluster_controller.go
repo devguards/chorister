@@ -23,6 +23,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -60,6 +61,7 @@ type ChoClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state to match the desired ChoCluster spec.
 func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -118,6 +120,10 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	if err := r.reconcileKubeBench(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Update status
 	cluster.Status.Phase = "Ready"
 	setCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -132,6 +138,53 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	log.Info("Reconciliation completed", "cluster", cluster.Name)
 	return ctrl.Result{}, nil
+}
+
+func (r *ChoClusterReconciler) reconcileKubeBench(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	if err := r.ensureClusterNamespace(ctx, "cho-system", map[string]string{clusterLabelManagedBy: "chocluster", clusterLabelComponent: "security"}); err != nil {
+		return err
+	}
+
+	cronJob := &batchv1.CronJob{}
+	key := types.NamespacedName{Name: "kube-bench", Namespace: "cho-system"}
+	err := r.Get(ctx, key, cronJob)
+	if errors.IsNotFound(err) {
+		cronJob = &batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      key.Name,
+				Namespace: key.Namespace,
+				Labels: map[string]string{
+					clusterLabelManagedBy: "chocluster",
+					clusterLabelComponent: "kube-bench",
+				},
+			},
+			Spec: batchv1.CronJobSpec{
+				Schedule: "0 4 * * 0",
+				JobTemplate: batchv1.JobTemplateSpec{
+					Spec: batchv1.JobSpec{
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								RestartPolicy: corev1.RestartPolicyNever,
+								Containers: []corev1.Container{{
+									Name:  "kube-bench",
+									Image: "docker.io/aquasec/kube-bench:latest",
+									Args:  []string{"run", "--targets=node,master"},
+								}},
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := r.Create(ctx, cronJob); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	cluster.Status.CISBenchmark = "kube-bench scheduled weekly"
+	return nil
 }
 
 // ---------------------------------------------------------------------------

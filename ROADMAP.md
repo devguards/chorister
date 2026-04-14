@@ -528,18 +528,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 13: Ingress & egress networking
 
-- [ ] **13.1 — Egress allowlist enforcement**
+- [x] **13.1 — Egress allowlist enforcement**
   - Read `policy.network.egress.allowlist` from ChoApplication
   - Generate CiliumNetworkPolicy with FQDN-based egress rules
   - Block all other egress (except DNS, intra-cluster)
   - **Test:** create application with egress allowlist for `httpbin.org` → pod can reach httpbin.org → pod cannot reach other external hosts
 
-- [ ] **13.2 — Ingress with JWT auth requirement**
+- [x] **13.2 — Ingress with JWT auth requirement**
   - ChoNetwork with `from = "internet"` requires auth block
   - Compile to Gateway API HTTPRoute + CiliumNetworkPolicy with JWT verification
   - **Test:** create ingress with JWT config → assert HTTPRoute + CiliumNetworkPolicy exist. Create ingress without auth → assert compile error.
 
-- [ ] **13.3 — Cross-application links via Gateway API**
+- [x] **13.3 — Cross-application links via Gateway API**
   - `link` in ChoApplication compiles to: HTTPRoute (consumer) + ReferenceGrant (supplier) + CiliumNetworkPolicy (L7) + CiliumEnvoyConfig (rate limit)
   - **Test:** create two applications with a link between them → assert HTTPRoute, ReferenceGrant, rate limit config exist → traffic flows through gateway
 
@@ -547,18 +547,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 14: Security scanning & vulnerability management
 
-- [ ] **14.1 — Image scanning before promotion**
+- [x] **14.1 — Image scanning before promotion**
   - Controller runs Trivy scan on all images in a ChoPromotionRequest
   - Block promotion if critical CVEs found (`standard`+)
   - Store results in ChoVulnerabilityReport CRD
   - **Test:** create promotion request with image containing known CVE → assert promotion blocked. Use clean image → promotion proceeds.
 
-- [ ] **14.2 — Continuous vulnerability scanning CronJobs**
+- [x] **14.2 — Continuous vulnerability scanning CronJobs**
   - For `standard`+ applications, controller creates CronJob per domain (daily re-scan)
   - Results written to ChoVulnerabilityReport CRDs
   - **Test:** create `standard` application with deployed images → assert CronJob exists → trigger manual run → assert ChoVulnerabilityReport created
 
-- [ ] **14.3 — kube-bench periodic validation**
+- [x] **14.3 — kube-bench periodic validation**
   - Controller creates kube-bench CronJob for cluster hardening checks
   - Results stored in ChoCluster.status.cisBenchmark
   - **Test:** assert kube-bench CronJob exists → trigger run → assert results in ChoCluster status

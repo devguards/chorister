@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -35,6 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/compiler"
 	"github.com/chorister-dev/chorister/internal/validation"
 )
 
@@ -49,6 +51,8 @@ type ChoNetworkReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state to match the desired ChoNetwork spec.
 func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -69,10 +73,10 @@ func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	validationErrors = append(validationErrors, validation.ValidateEgressWildcard(network)...)
 
 	// Validate against application policy (allowed IdPs)
-	app := &choristerv1alpha1.ChoApplication{}
-	appKey := types.NamespacedName{Name: network.Spec.Application, Namespace: network.Namespace}
-	if err := r.Get(ctx, appKey, app); err == nil {
+	app, appFound := r.lookupApplication(ctx, network)
+	if appFound {
 		validationErrors = append(validationErrors, validation.ValidateIngressAllowedIdP(network, app.Spec.Policy)...)
+		validationErrors = append(validationErrors, validation.ValidateEgressAllowedDestinations(network, app.Spec.Policy)...)
 	}
 
 	if len(validationErrors) > 0 {
@@ -98,6 +102,15 @@ func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Reconcile ingress NetworkPolicy if ingress spec is defined
 	if network.Spec.Ingress != nil {
 		if err := r.reconcileIngressPolicy(ctx, network); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.reconcileHTTPRoute(ctx, network); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if network.Spec.Egress != nil {
+		if err := r.reconcileEgressPolicy(ctx, network); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -169,6 +182,33 @@ func (r *ChoNetworkReconciler) reconcileIngressPolicy(ctx context.Context, netwo
 		existing.Spec = desired.Spec
 		existing.Labels = desired.Labels
 		return r.Update(ctx, existing)
+	}
+	return nil
+}
+
+func (r *ChoNetworkReconciler) reconcileHTTPRoute(ctx context.Context, network *choristerv1alpha1.ChoNetwork) error {
+	route := compiler.CompileIngressHTTPRoute(network)
+	return ensureUnstructured(ctx, r.Client, route)
+}
+
+func (r *ChoNetworkReconciler) reconcileEgressPolicy(ctx context.Context, network *choristerv1alpha1.ChoNetwork) error {
+	policy := compiler.CompileEgressCiliumPolicy(network)
+	return ensureUnstructured(ctx, r.Client, policy)
+}
+
+func (r *ChoNetworkReconciler) lookupApplication(ctx context.Context, network *choristerv1alpha1.ChoNetwork) (*choristerv1alpha1.ChoApplication, bool) {
+	for _, namespace := range []string{network.Namespace, "default"} {
+		app := &choristerv1alpha1.ChoApplication{}
+		if err := r.Get(ctx, types.NamespacedName{Name: network.Spec.Application, Namespace: namespace}, app); err == nil {
+			return app, true
+		}
+	}
+	return nil, false
+}
+
+func getUnstructuredSpec(obj *unstructured.Unstructured) map[string]interface{} {
+	if spec, ok := obj.Object["spec"].(map[string]interface{}); ok {
+		return spec
 	}
 	return nil
 }

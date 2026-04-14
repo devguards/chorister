@@ -487,7 +487,71 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 		})
 
 		It("should block promotion on critical image CVE", func() {
-			Skip("awaiting Phase 14.1: Image scanning before promotion")
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-scan-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}, RequireSecurityScan: true},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			for _, nsName := range []string{"promo-scan-app-payments", "promo-scan-app-payments-sandbox-dev"} {
+				ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, &corev1.Namespace{})
+				if errors.IsNotFound(err) {
+					Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+				}
+			}
+
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "promo-scan-app-payments-sandbox-dev"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "promo-scan-app",
+					Domain:      "payments",
+					Image:       "registry.example.com/vuln-critical:1.0",
+					Replicas:    int32Ptr(1),
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-scan", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-scan-app",
+					Domain:      "payments",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()}}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Rejected"))
+
+			report := &choristerv1alpha1.ChoVulnerabilityReport{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "promo-scan-scan", Namespace: "default"}, report)).To(Succeed())
+			Expect(report.Status.CriticalCount).To(BeNumerically(">", 0))
 		})
 	})
 })

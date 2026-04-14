@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -402,6 +403,23 @@ var _ = Describe("ChoCluster Controller", func() {
 			Expect(encCondition).NotTo(BeNil())
 			Expect(encCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(encCondition.Reason).To(Equal("NotFound"))
+		})
+
+		It("should create kube-bench CronJob and update CIS benchmark status", func() {
+			cluster := &choristerv1alpha1.ChoCluster{ObjectMeta: metav1.ObjectMeta{Name: "kube-bench-cluster"}}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: cluster.Name}})
+			Expect(err).NotTo(HaveOccurred())
+
+			cronJob := &batchv1.CronJob{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kube-bench", Namespace: "cho-system"}, cronJob)).To(Succeed())
+			Expect(cronJob.Spec.Schedule).To(Equal("0 4 * * 0"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Status.CISBenchmark).To(ContainSubstring("kube-bench"))
 		})
 	})
 })

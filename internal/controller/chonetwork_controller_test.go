@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -342,13 +343,118 @@ var _ = Describe("ChoNetwork Controller", func() {
 		})
 
 		It("should generate CiliumNetworkPolicy FQDN rules for egress allowlist", func() {
-			Skip("awaiting Phase 13.1: Egress allowlist enforcement")
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "egress-allow-payments"}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "egress-app", Namespace: ns.Name},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+						Network: &choristerv1alpha1.AppNetworkPolicy{
+							Egress: &choristerv1alpha1.EgressPolicy{Allowlist: []choristerv1alpha1.EgressTarget{{Host: "api.stripe.com", Port: 443}}},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "external", Namespace: ns.Name},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: app.Name,
+					Domain:      "payments",
+					Egress:      &choristerv1alpha1.NetworkEgressSpec{Allowlist: []string{"api.stripe.com"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			cnp := &unstructured.Unstructured{}
+			cnp.SetAPIVersion("cilium.io/v2")
+			cnp.SetKind("CiliumNetworkPolicy")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "external-egress", Namespace: ns.Name}, cnp)).To(Succeed())
+			egress := cnp.Object["spec"].(map[string]interface{})["egress"].([]interface{})
+			Expect(egress).To(HaveLen(2))
+			fqdnRule := egress[1].(map[string]interface{})["toFQDNs"].([]interface{})
+			Expect(fqdnRule[0].(map[string]interface{})["matchName"]).To(Equal("api.stripe.com"))
 		})
 
 		It("should produce HTTPRoute + ReferenceGrant + deny policy for cross-app links", func() {
-			Skip("awaiting Phase 13.3: Cross-application links via Gateway API")
+			target := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "supplier-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners:  []string{"owner@example.com"},
+					Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "standard", Promotion: choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}}},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "auth"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, target)
+				controllerutil.RemoveFinalizer(target, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, target)
+				_ = k8sClient.Delete(ctx, target)
+			}()
 
-			// Link produces HTTPRoute + ReferenceGrant + CiliumEnvoyConfig + direct-traffic deny
+			source := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "consumer-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners:  []string{"owner@example.com"},
+					Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "standard", Promotion: choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}}},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+					Links: []choristerv1alpha1.LinkSpec{{
+						Name:         "auth-api",
+						Target:       "supplier-app",
+						TargetDomain: "auth",
+						Port:         8443,
+						Consumers:    []string{"payments"},
+						Auth:         &choristerv1alpha1.LinkAuth{Type: "jwt"},
+						RateLimit:    &choristerv1alpha1.LinkRateLimit{RequestsPerMinute: 100},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, source)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: source.Name, Namespace: source.Namespace}, source)
+				controllerutil.RemoveFinalizer(source, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, source)
+				_ = k8sClient.Delete(ctx, source)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			for _, app := range []*choristerv1alpha1.ChoApplication{target, source} {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			httpRoute := &unstructured.Unstructured{}
+			httpRoute.SetAPIVersion("gateway.networking.k8s.io/v1")
+			httpRoute.SetKind("HTTPRoute")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "link-auth-api-payments", Namespace: "consumer-app-payments"}, httpRoute)).To(Succeed())
+
+			referenceGrant := &unstructured.Unstructured{}
+			referenceGrant.SetAPIVersion("gateway.networking.k8s.io/v1beta1")
+			referenceGrant.SetKind("ReferenceGrant")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "link-auth-api-payments", Namespace: "supplier-app-auth"}, referenceGrant)).To(Succeed())
+
+			envoyConfig := &unstructured.Unstructured{}
+			envoyConfig.SetAPIVersion("cilium.io/v2")
+			envoyConfig.SetKind("CiliumEnvoyConfig")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "link-auth-api-payments", Namespace: "consumer-app-payments"}, envoyConfig)).To(Succeed())
+
+			directPolicy := &networkingv1.NetworkPolicy{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "link-auth-api-payments-deny-direct", Namespace: "consumer-app-payments"}, directPolicy)).To(Succeed())
 		})
 	})
 

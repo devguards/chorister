@@ -21,12 +21,14 @@ import (
 	"fmt"
 	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -36,6 +38,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/compiler"
+	"github.com/chorister-dev/chorister/internal/scanning"
 	"github.com/chorister-dev/chorister/internal/validation"
 )
 
@@ -48,7 +52,8 @@ const (
 // ChoApplicationReconciler reconciles a ChoApplication object
 type ChoApplicationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme  *runtime.Scheme
+	Scanner scanning.Scanner
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch;create;update;patch;delete
@@ -58,6 +63,11 @@ type ChoApplicationReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes;referencegrants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies;ciliumenvoyconfigs,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state to match the desired ChoApplication spec.
 func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -145,7 +155,15 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 
+		if err := r.ensurePeriodicVulnerabilityScanning(ctx, app, domain, nsName); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		log.Info("Reconciled domain namespace", "namespace", nsName, "domain", domain.Name)
+	}
+
+	if err := r.ensureCrossApplicationLinks(ctx, app); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Remove namespaces for domains that no longer exist
@@ -195,6 +213,169 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ChoApplicationReconciler) ensurePeriodicVulnerabilityScanning(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec, nsName string) error {
+	if app.Spec.Policy.Compliance != "standard" && app.Spec.Policy.Compliance != "regulated" {
+		return nil
+	}
+
+	cronJobName := "vulnerability-scan"
+	cronJob := &batchv1.CronJob{}
+	err := r.Get(ctx, types.NamespacedName{Name: cronJobName, Namespace: nsName}, cronJob)
+	if errors.IsNotFound(err) {
+		cronJob = &batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cronJobName,
+				Namespace: nsName,
+				Labels: map[string]string{
+					labelApplication: app.Name,
+					labelDomain:      domain.Name,
+				},
+			},
+			Spec: batchv1.CronJobSpec{
+				Schedule: "0 3 * * *",
+				JobTemplate: batchv1.JobTemplateSpec{
+					Spec: batchv1.JobSpec{
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								RestartPolicy: corev1.RestartPolicyNever,
+								Containers: []corev1.Container{{
+									Name:  "scanner",
+									Image: "ghcr.io/aquasecurity/trivy:latest",
+									Args:  []string{"image", "--quiet"},
+								}},
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := r.Create(ctx, cronJob); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	computeList := &choristerv1alpha1.ChoComputeList{}
+	if err := r.List(ctx, computeList, client.InNamespace(nsName)); err != nil {
+		return err
+	}
+	images := uniqueImagesFromComputes(computeList.Items)
+	result, err := r.getScanner().ScanImages(ctx, images)
+	if err != nil {
+		return err
+	}
+
+	reportName := fmt.Sprintf("%s-%s-vulnerability-report", app.Name, domain.Name)
+	report := &choristerv1alpha1.ChoVulnerabilityReport{}
+	reportKey := types.NamespacedName{Name: reportName, Namespace: app.Namespace}
+	if err := r.Get(ctx, reportKey, report); err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		report = &choristerv1alpha1.ChoVulnerabilityReport{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      reportName,
+				Namespace: app.Namespace,
+				Labels: map[string]string{
+					labelApplication: app.Name,
+					labelDomain:      domain.Name,
+				},
+			},
+			Spec: choristerv1alpha1.ChoVulnerabilityReportSpec{
+				Application: app.Name,
+				Domain:      domain.Name,
+				Trigger:     "periodic",
+				TargetRef:   nsName,
+				Images:      images,
+			},
+		}
+		if err := r.Create(ctx, report); err != nil {
+			return err
+		}
+		if err := r.Get(ctx, reportKey, report); err != nil {
+			return err
+		}
+	} else {
+		report.Spec.Application = app.Name
+		report.Spec.Domain = domain.Name
+		report.Spec.Trigger = "periodic"
+		report.Spec.TargetRef = nsName
+		report.Spec.Images = images
+		if err := r.Update(ctx, report); err != nil {
+			return err
+		}
+	}
+
+	now := metav1.Now()
+	report.Status.Scanner = result.Scanner
+	report.Status.CriticalCount = result.CriticalCount
+	report.Status.Findings = result.Findings
+	report.Status.ScannedAt = &now
+	if result.CriticalCount > 0 {
+		report.Status.Phase = "FindingsPresent"
+		setCondition(&report.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CriticalFindings", Message: "Periodic scan found critical vulnerabilities"})
+	} else {
+		report.Status.Phase = "Clean"
+		setCondition(&report.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "ScanComplete", Message: "Periodic scan completed without critical findings"})
+	}
+	return r.Status().Update(ctx, report)
+}
+
+func (r *ChoApplicationReconciler) ensureCrossApplicationLinks(ctx context.Context, app *choristerv1alpha1.ChoApplication) error {
+	for _, link := range app.Spec.Links {
+		for _, consumer := range link.Consumers {
+			artifacts := compiler.CompileCrossApplicationLink(app, link, consumer)
+			for _, obj := range []*unstructured.Unstructured{artifacts.HTTPRoute, artifacts.ReferenceGrant, artifacts.CiliumPolicy, artifacts.CiliumEnvoyConfig} {
+				if err := ensureUnstructured(ctx, r.Client, obj); err != nil {
+					return err
+				}
+			}
+
+			existingPolicy := &networkingv1.NetworkPolicy{}
+			key := types.NamespacedName{Name: artifacts.DirectDenyPolicy.Name, Namespace: artifacts.DirectDenyPolicy.Namespace}
+			if err := r.Get(ctx, key, existingPolicy); err != nil {
+				if errors.IsNotFound(err) {
+					if err := r.Create(ctx, artifacts.DirectDenyPolicy); err != nil {
+						return err
+					}
+					continue
+				}
+				return err
+			}
+			existingPolicy.Spec = artifacts.DirectDenyPolicy.Spec
+			existingPolicy.Labels = artifacts.DirectDenyPolicy.Labels
+			if err := r.Update(ctx, existingPolicy); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ChoApplicationReconciler) getScanner() scanning.Scanner {
+	if r.Scanner != nil {
+		return r.Scanner
+	}
+	return scanning.NewDefaultScanner()
+}
+
+func uniqueImagesFromComputes(computes []choristerv1alpha1.ChoCompute) []string {
+	seen := map[string]struct{}{}
+	images := make([]string, 0, len(computes))
+	for _, compute := range computes {
+		if compute.Spec.Image == "" {
+			continue
+		}
+		if _, ok := seen[compute.Spec.Image]; ok {
+			continue
+		}
+		seen[compute.Spec.Image] = struct{}{}
+		images = append(images, compute.Spec.Image)
+	}
+	return images
 }
 
 // ensureNamespace creates or updates a domain namespace with the correct labels.
