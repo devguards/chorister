@@ -16,7 +16,7 @@ All integration tests run against a local Kind cluster with Cilium. The test har
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.25+
 - Kind
 - kubectl
 - Helm (for operator installs during testing)
@@ -387,6 +387,89 @@ All integration tests run against a local Kind cluster with Cilium. The test har
   - Support external backends: GCP Secret Manager, AWS Secrets Manager (via ExternalSecrets operator or direct)
   - Production environments reference external secrets
   - **Test:** (mock) configure external secret reference → assert ExternalSecret CR created → mock backend → assert K8s Secret synced
+
+---
+
+## Phase 18: Stateful resource deletion safety
+
+- [ ] **18.1 — Archive lifecycle for stateful resources**
+  - When a stateful resource (ChoDatabase, ChoQueue, ChoStorage) is removed from the DSL and promoted, controller transitions it to `Archived` instead of deleting
+  - Archived resources: data intact (read-only), connections refused, backups continue
+  - Add `status.lifecycle` (Active/Archived/Deletable), `status.archivedAt`, `status.deletableAfter` fields
+  - **Test:** create ChoDatabase → promote with database removed from DSL → assert database status=Archived, not deleted → assert data still accessible via backup tools → assert dependent ChoCompute gets compile error
+
+- [ ] **18.2 — Archive retention period enforcement**
+  - Controller enforces minimum 30-day archive period (configurable upward via `policy.archiveRetention`)
+  - After retention period, controller transitions resource to `Deletable` (still not deleted)
+  - **Test:** create archived database → assert it cannot be deleted before retention period → advance time (or set short retention for test) → assert status=Deletable
+
+- [ ] **18.3 — Explicit deletion of archived resources**
+  - `chorister admin resource delete --archived <resource>` finalizes deletion
+  - Controller takes final backup snapshot to object storage before deletion
+  - Deletion is an audited action (Loki event)
+  - **Test:** archive a database → wait for Deletable → run delete command → assert final snapshot exists in object storage → assert resource fully removed → assert audit event logged
+
+- [ ] **18.4 — Sandbox exemption from archive lifecycle**
+  - Stateful resources in sandbox namespaces are deleted immediately on sandbox destruction
+  - No archive lifecycle for sandboxes
+  - **Test:** create sandbox with database → destroy sandbox → assert database deleted immediately (no Archived state)
+
+---
+
+## Phase 19: Controller upgrade & CRD versioning
+
+- [ ] **19.1 — Controller revision labeling**
+  - Controller reads its revision name from config and only reconciles namespaces with matching `chorister.dev/rev` label
+  - Untagged namespaces default to the revision tagged `stable` in ChoCluster
+  - **Test:** deploy controller with revision "1-0" → create namespace with `chorister.dev/rev: "1-0"` → assert reconciled. Create namespace with different rev → assert ignored.
+
+- [ ] **19.2 — Blue-green controller upgrade flow**
+  - `chorister admin upgrade --revision <new>` deploys a new controller alongside the old one
+  - `chorister admin upgrade --promote <rev>` retags all namespaces and marks revision as stable
+  - `chorister admin upgrade --rollback <rev>` removes canary revision
+  - **Test:** deploy v1 (stable) → deploy v2 (canary) → retag one namespace to v2 → assert v2 reconciles it → promote v2 → assert all namespaces on v2 → old controller idle
+
+- [ ] **19.3 — Compilation stability tracking**
+  - Controller records `compiledWithRevision` in each resource's status
+  - `chorister diff` shows when compiled output differs between controller revisions even if DSL is unchanged
+  - **Test:** compile resource with v1 → upgrade to v2 (different output) → `chorister diff` shows the compilation difference
+
+---
+
+## Phase 20: Sandbox lifecycle & FinOps quotas
+
+- [ ] **20.1 — Sandbox idle detection and auto-destroy**
+  - Controller tracks last `chorister apply` timestamp per sandbox
+  - Sandboxes idle longer than `policy.sandbox.maxIdleDays` are auto-destroyed
+  - 24h warning via status condition before destruction
+  - **Test:** create sandbox → wait beyond idle threshold (use short interval for test) → assert warning condition → assert sandbox destroyed
+
+- [ ] **20.2 — FinOps cost estimation engine**
+  - Define `ChoCluster.spec.finops.rates` for per-unit cost rates (CPU/hour, memory/GB-hour, storage/GB-month, per-size flat rates)
+  - Controller estimates cost of each sandbox based on resource declarations and rates
+  - Cost visible in sandbox status: `status.sandbox.estimatedMonthlyCost`
+  - **Test:** set rates in ChoCluster → create sandbox with known resources → assert estimated cost matches expected calculation
+
+- [ ] **20.3 — Domain sandbox budget enforcement**
+  - `policy.sandbox.defaultBudgetPerDomain` in ChoApplication, overridable per domain
+  - `chorister sandbox create` rejected if domain total would exceed budget (with cost breakdown in error)
+  - Alert at configurable threshold (default 80%)
+  - **Test:** set $100 budget → create sandbox costing $60 → succeeds → create another $60 sandbox → rejected with budget exceeded error → assert alert at 80% threshold
+
+---
+
+## Phase 21: Resource sizing templates
+
+- [ ] **21.1 — Sizing template definitions in ChoCluster**
+  - `ChoCluster.spec.sizingTemplates` with per-resource-type named templates (database, cache, queue)
+  - `chorister setup` creates sensible defaults
+  - `size` field in DSL references template name → compile error if template doesn't exist
+  - **Test:** define templates in ChoCluster → create ChoDatabase with `size: "medium"` → assert resource requests match template. Use undefined size → assert compile error.
+
+- [ ] **21.2 — Explicit resource override**
+  - DSL allows explicit `cpu`, `memory`, `storage` fields that bypass templates entirely
+  - Controller validates against namespace ResourceQuota
+  - **Test:** create ChoDatabase with explicit cpu/memory/storage → assert values used instead of template. Exceed quota → assert rejection.
 
 ---
 

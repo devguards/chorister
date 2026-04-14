@@ -137,7 +137,7 @@ No undeclared traffic. No forgotten firewall rules. The dependency graph IS the 
 
 ### 3. Compliance as code — one word, four frameworks
 
-Set your compliance posture at the application level. Pick a profile. The controller maps it to the right combination of CIS Controls, CIS K8s Benchmark, SOC 2, and ISO 27001 — and enforces it everywhere, automatically.
+Set your compliance posture at the application level. Pick a profile. The controller maps it to the right combination of CIS Controls, CIS K8s Benchmark, SOC 2 evidence, and ISO 27001 governance controls — enforcing technical controls and generating audit evidence automatically. Organizational controls (incident comms, vendor contracts, physical security) still require company processes outside the platform.
 
 ```hcl
 compliance = "standard"   // essential | standard | regulated
@@ -147,9 +147,9 @@ compliance = "standard"   // essential | standard | regulated
 |---|---|---|
 | `essential` | Internal tools, dev environments | CIS Controls IG1, CIS K8s Level 1 |
 | `standard` | Production SaaS, customer-facing | CIS Controls IG2, CIS K8s Level 1, SOC 2 (Security + Availability) |
-| `regulated` | Banking, healthcare, government | CIS Controls IG3, CIS K8s Level 2, SOC 2 (Security + Availability + Confidentiality), ISO 27001 |
+| `regulated` | Banking, healthcare, government, sensitive data | CIS Controls IG3, CIS K8s Level 2, SOC 2 (Security + Availability + Confidentiality), ISO 27001 |
 
-This single word activates: OPA constraints, image scanning gates, Tetragon runtime detection, audit log retention, access review automation, encrypted storage, and dozens of other controls. Each mapped to specific framework safeguards. You don't need to know what "IG2" means.
+Each profile builds on the previous one. `essential` activates OPA constraints, deny-all NetworkPolicy, audit log retention, and encrypted storage. `standard` adds image scanning gates, access review automation, HA requirements, and SOC 2 evidence fields. `regulated` adds full Tetragon runtime detection, seccomp/AppArmor enforcement, and ISO 27001-aligned governance controls. You don't need to know what "IG2" means — see [SECURITY_COMPLIANCE.md](SECURITY_COMPLIANCE.md) for the full mapping.
 
 ### 4. The controller bootstraps everything
 

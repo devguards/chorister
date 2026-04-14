@@ -29,6 +29,10 @@ Unless marked as deferred or MVP-only, this document describes the target end-st
 17. [Platform Gaps & Deferred Decisions](#17-platform-gaps--deferred-decisions)
 18. [Multi-cluster & Scaling Path](#18-multi-cluster--scaling-path)
 19. [Implementation Timeline](#19-implementation-timeline)
+20. [Stateful Resource Deletion Safety](#20-stateful-resource-deletion-safety)
+21. [Controller Upgrade & CRD Versioning](#21-controller-upgrade--crd-versioning)
+22. [Sandbox Lifecycle & FinOps Quotas](#22-sandbox-lifecycle--finops-quotas)
+23. [Resource Sizing Model](#23-resource-sizing-model)
 
 ---
 
@@ -791,6 +795,265 @@ WEEK 7-8:
 
 ---
 
+## 20. Stateful Resource Deletion Safety
+
+**Core safety invariant:** removing a stateful resource (database, queue, storage) from the DSL and promoting must never cause immediate data loss. Stateful resources in production use an **archive lifecycle**, not soft-delete.
+
+### Archive lifecycle
+
+When a stateful resource is removed from the DSL, the controller does not delete it. It transitions the resource to `Archived` state.
+
+```
+Active → Archived (resource removed from DSL + promoted)
+  → Archived for 30 days (data intact, connections refused)
+    → Deletable (after retention period, explicit delete required)
+```
+
+| State | Data | Connections | Visible in status/UI | Billed/counted |
+|---|---|---|---|---|
+| `Active` | Read/write | Open | Yes, as active | Yes |
+| `Archived` | Read-only (backups continue) | Refused — dependents get compile error | Yes, marked `archived` | Yes |
+| `Deletable` | Read-only | Refused | Yes, marked `deletable` | Yes |
+| `Deleted` | Gone (final backup snapshot retained) | N/A | No | No |
+
+### Rules
+
+1. **Promotion creates the archive.** Removing `database "ledger"` from the DSL and promoting transitions the production resource to `Archived`. The sandbox resource is deleted immediately (sandboxes are ephemeral).
+2. **Archived resources block dependents.** Any `compute` that references an archived database gets a compile error. This forces teams to explicitly clean up references, not silently lose a dependency.
+3. **30-day retention is mandatory.** The controller enforces a minimum 30-day archive period before the resource becomes `Deletable`. Configurable upward at the Application level (`policy.archiveRetention`), never downward.
+4. **Deletion is explicit.** After the retention period, the resource moves to `Deletable` but is NOT automatically deleted. A platform admin must run `chorister admin resource delete --archived <resource>` to finalize. This is an audited action.
+5. **Final snapshot.** On transition to `Deleted`, the controller takes a final backup snapshot (StackGres backup, NATS stream snapshot) to object storage. Snapshot retention follows the Application's `auditRetention` policy.
+6. **Sandboxes are exempt.** Sandbox stateful resources are deleted immediately on sandbox destruction. No archive lifecycle — sandboxes are disposable by design.
+
+### CRD status
+
+```yaml
+status:
+  lifecycle: Archived          # Active | Archived | Deletable
+  archivedAt: "2026-04-14T00:00:00Z"
+  deletableAfter: "2026-05-14T00:00:00Z"
+  finalSnapshotRef: "s3://backups/myproduct-payments/ledger/final-20260514.sql.gz"
+```
+
+### What this prevents
+
+- Accidental `database "ledger"` removal deleting production data
+- Renaming a resource (remove + add) silently dropping the old one
+- Cascading failures from removing a dependency that other components still reference
+
+**Rejected:** soft-delete (ambiguous — is it running or not?), immediate delete with confirmation prompt (CLI prompts are not safe for automation), garbage-collection timers (invisible countdown).
+
+---
+
+## 21. Controller Upgrade & CRD Versioning
+
+### Controller upgrade: blue-green with version tags
+
+Follows the Istio revision model. Two controller versions can coexist on the same cluster. Namespaces declare which controller version manages them.
+
+```yaml
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCluster
+metadata:
+  name: cluster-config
+spec:
+  controller:
+    revisions:
+      - name: "1-4"          # currently active
+        tag: stable
+      - name: "1-5"          # canary
+        tag: canary
+```
+
+Namespaces are tagged with `chorister.dev/rev`:
+
+```yaml
+metadata:
+  labels:
+    chorister.dev/rev: "1-4"   # this namespace is managed by controller 1-4
+```
+
+### Upgrade procedure
+
+1. **Install new revision.** `chorister admin upgrade --revision 1-5` deploys the new controller alongside the old one. Both run simultaneously.
+2. **Canary.** Retag one low-risk domain's namespace to `chorister.dev/rev: "1-5"`. The new controller picks it up; the old controller ignores it. Verify.
+3. **Roll forward.** Retag remaining namespaces. `chorister admin upgrade --promote 1-5` retags all namespaces and sets the new revision as `stable`.
+4. **Rollback.** If canary fails, retag namespace back. Old controller resumes. `chorister admin upgrade --rollback 1-5` removes the canary revision.
+5. **Cleanup.** After all namespaces are on the new revision, remove the old controller deployment.
+
+Each controller revision only reconciles namespaces matching its `chorister.dev/rev` label. Untagged namespaces default to the `stable` revision.
+
+### CRD versioning
+
+| Principle | Rule |
+|---|---|
+| **Backward compatible within a major** | New fields are additive with defaults. Existing fields are never removed or renamed within `v1alpha1` → `v1` lineage. |
+| **Version bump = storage migration** | `v1alpha1` → `v1beta1` → `v1`. Each bump includes a conversion webhook. Old CRDs continue to work via conversion. |
+| **No silent recompilation** | A controller upgrade that changes compiled output (e.g., different Deployment spec from the same DSL) must record the change in the audit log and show it in `chorister diff`. |
+| **CRD schema validation** | Controller validates that its CRD schemas are compatible with existing resources on startup. Refuses to start if it would break existing CRDs, logs the incompatibility. |
+
+### Compilation stability
+
+The controller records a `compiledWithRevision` field in each resource's status. `chorister diff` shows when compiled output differs between the current controller and the running state, even if the DSL hasn't changed. This makes controller upgrades visible in the normal promotion flow.
+
+---
+
+## 22. Sandbox Lifecycle & FinOps Quotas
+
+### Sandbox limits
+
+Sandbox creation is governed by a **domain budget**, not a hard sandbox count. The budget is configurable at both Application and Domain level (domain overrides application default).
+
+```yaml
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: myproduct
+spec:
+  policy:
+    sandbox:
+      defaultBudgetPerDomain: "$500/month"    # estimated cost ceiling for all sandboxes in a domain
+      maxIdleDays: 7                            # auto-destroy after N days of no applies
+      budgetAlertThreshold: 80                  # percent — warn domain owner
+```
+
+Domain-level override:
+
+```yaml
+domains:
+  - name: payments
+    sandbox:
+      budget: "$1000/month"    # payments team gets a larger sandbox budget
+      maxIdleDays: 14
+```
+
+### FinOps-based quotas
+
+Rather than counting sandboxes or CPU cores, quotas are expressed as **estimated monthly cost**. The controller calculates sandbox cost from resource declarations:
+
+| Resource | Cost model |
+|---|---|
+| `compute` | vCPU × hours + memory × hours (configurable rates in ChoCluster) |
+| `database` | Instance size × hours + storage GB |
+| `queue` | Instance count × hours |
+| `cache` | Memory size × hours |
+
+Platform admins set the per-unit rates in `ChoCluster.spec.finops.rates` to match their actual infrastructure costs (cloud bill, bare-metal amortization, etc.).
+
+```yaml
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCluster
+metadata:
+  name: cluster-config
+spec:
+  finops:
+    rates:
+      cpuPerHour: "$0.03"          # per vCPU-hour
+      memoryGBPerHour: "$0.004"    # per GB-hour
+      storageGBPerMonth: "$0.10"   # per GB-month
+      postgresSmall: "$50/month"   # flat rate per size tier
+      postgresMedium: "$150/month"
+      postgresLarge: "$400/month"
+```
+
+### Behavior
+
+| Event | Action |
+|---|---|
+| `chorister sandbox create` | Controller estimates cost of the sandbox spec. If domain total would exceed budget → reject with cost breakdown. |
+| Budget at 80% (configurable) | Alert domain owner via status condition + Grafana alert. |
+| Budget exceeded | Block new sandbox creation. Existing sandboxes continue running. |
+| Sandbox idle > `maxIdleDays` | Controller destroys sandbox. Warns 24h before via status. |
+| Domain owner requests increase | Update domain sandbox budget (requires org-admin if above application default). |
+
+### Status visibility
+
+```yaml
+status:
+  sandbox:
+    activeSandboxes: 3
+    estimatedMonthlyCost: "$340"
+    budget: "$500/month"
+    budgetUsagePercent: 68
+```
+
+This model lets a team with a $500 budget run one big sandbox or five small ones — their choice. It also sets the foundation for production FinOps reporting in later phases (same cost model, applied to production namespaces).
+
+### What this prevents
+
+- Runaway sandbox sprawl (forgotten sandboxes consuming cluster resources)
+- Unfair resource distribution between teams
+- Cost surprises from idle infrastructure
+
+**Deferred:** production FinOps (cost attribution per domain, chargeback reports, showback dashboards). Same cost model, applied to production namespaces post-MVP.
+
+---
+
+## 23. Resource Sizing Model
+
+Resource sizing uses **named templates** rather than fixed small/medium/large tiers. Platform admins define sizing templates in `ChoCluster`; domain teams reference them by name.
+
+### Why templates, not fixed tiers
+
+- Fixed tiers assume one mapping fits all clusters. A "medium" Postgres on a 64-core bare-metal node is different from "medium" on a 4-vCPU Kind cluster.
+- Templates let platform admins tune sizing to their actual hardware and cost model.
+- Teams can request new templates without changing the DSL schema.
+
+### Template definition (platform admin)
+
+```yaml
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCluster
+metadata:
+  name: cluster-config
+spec:
+  sizingTemplates:
+    database:
+      small:  { cpu: "500m",  memory: "1Gi",  storage: "10Gi",  instances: 1 }
+      medium: { cpu: "2",     memory: "4Gi",  storage: "50Gi",  instances: 2 }
+      large:  { cpu: "4",     memory: "16Gi", storage: "200Gi", instances: 3 }
+      xlarge: { cpu: "8",     memory: "32Gi", storage: "500Gi", instances: 3 }
+    cache:
+      small:  { cpu: "250m",  memory: "512Mi" }
+      medium: { cpu: "1",     memory: "2Gi"   }
+      large:  { cpu: "2",     memory: "8Gi"   }
+    queue:
+      small:  { cpu: "250m",  memory: "512Mi", replicas: 1 }
+      medium: { cpu: "1",     memory: "2Gi",   replicas: 3 }
+      large:  { cpu: "2",     memory: "4Gi",   replicas: 3 }
+```
+
+### Usage in DSL
+
+```
+database "ledger" { engine = "postgres"; size = "medium"; ha = true }
+cache "sessions"  { size = "small" }
+```
+
+`size` references a template name. If the name doesn't exist in `ChoCluster.spec.sizingTemplates` → compile error.
+
+### Explicit override
+
+Teams can bypass templates with explicit resource specs when a template doesn't fit:
+
+```
+database "analytics" {
+  engine   = "postgres"
+  ha       = true
+  cpu      = "6"
+  memory   = "24Gi"
+  storage  = "1Ti"
+}
+```
+
+Explicit values override the template entirely. The controller still validates against namespace ResourceQuota.
+
+### Defaults
+
+chorister ships sensible defaults in the CRD (matching the `small` tier above). `chorister setup` creates default templates. Platform admins customize post-setup.
+
+---
+
 ## Decision Summary
 
 | # | Decision | Choice |
@@ -814,3 +1077,7 @@ WEEK 7-8:
 | 17 | Multi-cluster | Single cluster for MVP. Hot-cold then active-active post-MVP. |
 | 18 | CI/CD | Out of scope. chorister promotes images, not code. |
 | 19 | GitOps | Push-based MVP. Exportable Blueprints for ArgoCD/Flux. |
+| 20 | Stateful deletion safety | Archive lifecycle: Archived → 30-day retention → explicit delete. No accidental data loss. |
+| 21 | Controller upgrade | Blue-green with namespace version tags (Istio revision model). CRDs backward-compatible within major. |
+| 22 | Sandbox lifecycle | FinOps-based quotas (estimated cost budget per domain). Auto-destroy idle sandboxes. |
+| 23 | Resource sizing | Named templates in ChoCluster, customizable by platform admin. Explicit overrides allowed. |
