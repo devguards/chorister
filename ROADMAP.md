@@ -10,13 +10,15 @@ This document is the implementation sequence, not the product contract. README a
 
 ---
 
-## Test cluster setup
+## Testing setup
 
-All integration tests run against a local Kind cluster with Cilium. The test harness is itself an early deliverable.
+Fast controller integration tests should run first with envtest. Full end-to-end integration tests run against a local Kind cluster with Cilium. The test harness is itself an early deliverable.
 
 ### Prerequisites
 
 - Go 1.25+
+- Kubebuilder
+- setup-envtest
 - Kind
 - kubectl
 - Helm (for operator installs during testing)
@@ -26,13 +28,22 @@ All integration tests run against a local Kind cluster with Cilium. The test har
 
 ## Phase 0: Project scaffold & test harness
 
-- [ ] **0.1 — Initialize Go module and project structure**
-  - `go mod init github.com/chorister-dev/chorister`
-  - Directory layout: `cmd/chorister/`, `cmd/controller/`, `internal/`, `api/v1alpha1/`, `test/e2e/`
-  - Makefile with targets: `build`, `test`, `lint`, `generate`, `e2e`
-  - **Test:** `go build ./...` succeeds
+- [ ] **0.1 — Initialize project with Kubebuilder**
+  - Run `kubebuilder init` with the project domain and repository path
+  - Use Kubebuilder's standard layout as the base for the controller codebase
+  - Keep the CLI as a separate binary under `cmd/chorister/`
+  - Ensure the repository contains `api/`, `internal/controller/`, `config/`, `hack/`, `test/`, `cmd/controller/`, and `cmd/chorister/`
+  - Makefile includes targets for `build`, `test`, `lint`, `generate`, `manifests`, and `e2e`
+  - **Test:** `go build ./...` succeeds and Kubebuilder-generated manifests render without error
 
-- [ ] **0.2 — Kind cluster provisioning script with Cilium**
+- [ ] **0.2 — Set up envtest for controller integration tests**
+  - Add envtest asset installation via `setup-envtest`
+  - Add a shared Go test harness for API server and etcd lifecycle
+  - Create helpers to install CRDs, create test namespaces, and wait on conditions
+  - Add a trivial reconciliation test that creates a custom resource and asserts the API server accepts it
+  - **Test:** `make test` runs envtest-backed tests locally without requiring Kind
+
+- [ ] **0.3 — Kind cluster provisioning script with Cilium**
   - Script: `hack/setup-test-cluster.sh`
   - Creates Kind cluster (multi-node: 1 control-plane, 2 workers)
   - Disables default CNI, installs Cilium via Helm with `hubble.enabled=true`
@@ -40,8 +51,8 @@ All integration tests run against a local Kind cluster with Cilium. The test har
   - Installs Gateway API CRDs
   - **Test:** `cilium status` shows all agents ready, `kubectl get nodes` shows Ready
 
-- [ ] **0.3 — E2E test framework**
-  - Use `sigs.k8s.io/e2e-framework` or raw client-go
+- [ ] **0.4 — E2E test framework**
+  - Use `sigs.k8s.io/e2e-framework` rather than raw client-go as the default harness
   - Helper functions: create namespace, apply manifest, wait-for-condition, cleanup
   - CI-friendly: `make e2e` creates cluster → runs tests → destroys cluster
   - **Test:** a trivial test that creates a namespace and asserts it exists
