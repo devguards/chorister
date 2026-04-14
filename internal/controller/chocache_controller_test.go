@@ -21,8 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,6 +86,70 @@ var _ = Describe("ChoCache Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// 1A.7 — ChoCache lifecycle (envtest)
+	// -----------------------------------------------------------------------
+
+	Context("1A.7 — ChoCache lifecycle", func() {
+		It("should create Dragonfly Deployment and Service", func() {
+			Skip("awaiting Phase 5.3: ChoCache reconciler → Dragonfly")
+
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "sessions", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert Deployment created
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sessions", Namespace: "default"}, deploy)).To(Succeed())
+
+			// Assert Service created
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sessions", Namespace: "default"}, svc)).To(Succeed())
+		})
+
+		It("should map size to correct resource requests", func() {
+			Skip("awaiting Phase 5.3: ChoCache reconciler → Dragonfly")
+
+			for _, size := range []string{"small", "medium", "large"} {
+				cache := &choristerv1alpha1.ChoCache{
+					ObjectMeta: metav1.ObjectMeta{Name: "cache-" + size, Namespace: "default"},
+					Spec: choristerv1alpha1.ChoCacheSpec{
+						Application: "myapp",
+						Domain:      "auth",
+						Size:        size,
+					},
+				}
+				Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+
+				reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				deploy := &appsv1.DeploymentList{}
+				Expect(k8sClient.List(ctx, deploy, client.InNamespace("default"),
+					client.MatchingLabels{"chorister.dev/cache": "cache-" + size})).To(Succeed())
+				Expect(deploy.Items).NotTo(BeEmpty())
+
+				_ = k8sClient.Delete(ctx, cache)
+			}
 		})
 	})
 })

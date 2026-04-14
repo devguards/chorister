@@ -81,4 +81,73 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// 1A.10 — Promotion lifecycle (envtest)
+	// -----------------------------------------------------------------------
+
+	Context("1A.10 — Promotion lifecycle", func() {
+		It("should follow status lifecycle: Pending → Approved → Executing → Completed", func() {
+			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-lifecycle", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Sandbox:     "alice",
+					RequestedBy: "alice@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Initial reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Pending"))
+		})
+
+		It("should stay Pending until required approvals met", func() {
+			Skip("awaiting Phase 8.3: Approval gate enforcement")
+
+			// Create promotion with policy requiring 2 approvers → 1 approval → still Pending
+		})
+
+		It("should reject approval from disallowed role", func() {
+			Skip("awaiting Phase 8.3: Approval gate enforcement")
+
+			// Approval from disallowed role does not satisfy policy
+		})
+
+		It("should copy compiled manifests on approval", func() {
+			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+
+			// Production namespace updated on approval
+		})
+
+		It("should store diff and compiled revision in request status", func() {
+			Skip("awaiting Phase 8.2: ChoPromotionRequest reconciler")
+
+			// request/status captures resource diff and compiledWithRevision
+		})
+
+		It("should block promotion when domain is degraded", func() {
+			Skip("awaiting Phase 15.3: Service health baseline and incident response")
+
+			// Degraded domain → promotion rejected
+		})
+
+		It("should block promotion on critical image CVE", func() {
+			Skip("awaiting Phase 14.1: Image scanning before promotion")
+
+			// Critical CVE → promotion blocked
+		})
+	})
 })

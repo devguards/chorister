@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -83,6 +84,40 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// 1A.7 — ChoQueue lifecycle (envtest)
+	// -----------------------------------------------------------------------
+
+	Context("1A.7 — ChoQueue lifecycle", func() {
+		It("should create credential Secret for NATS connection", func() {
+			Skip("awaiting Phase 5.2: ChoQueue reconciler → NATS JetStream")
+
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "events", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert NATS connection Secret exists
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "payments--queue--events-credentials", Namespace: "default",
+			}, secret)).To(Succeed())
 		})
 	})
 })

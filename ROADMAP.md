@@ -95,7 +95,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ### Unit tests — `internal/compiler/`, `internal/validation/`
 
-- [ ] **1A.1 — Compilation unit tests (t.Skip where compiler not yet built)**
+- [x] **1A.1 — Compilation unit tests (t.Skip where compiler not yet built)**
   - `TestCompileCompute_DeploymentShape` — ChoCompute → Deployment+Service fields, labels, resource requests
   - `TestCompileCompute_JobVariant` — variant=job → Job manifest
   - `TestCompileCompute_CronJobVariant` — variant=cronjob → CronJob with schedule
@@ -116,7 +116,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - Table-driven tests with edge cases: zero replicas, empty image, missing required fields
   - **Test:** `go test ./internal/compiler/...` — skipped tests report which phase unblocks them
 
-- [ ] **1A.2 — Validation unit tests**
+- [x] **1A.2 — Validation unit tests**
   - `TestValidateConsumesSupplies_Mismatch` — A consumes B but B does not supply → error
   - `TestValidateConsumesSupplies_OK` — matched consumes/supplies → no error
   - `TestValidateCycleDetection` — A→B→C→A → error with cycle path
@@ -135,7 +135,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestValidateRestrictedMembershipExpiryRequired` — restricted domain or regulated app membership without `expiresAt` → validation error
   - **Test:** `go test ./internal/validation/...`
 
-- [ ] **1A.3 — Diff engine unit tests**
+- [x] **1A.3 — Diff engine unit tests**
   - `TestDiff_Added` — resource in sandbox but not prod → shows "added"
   - `TestDiff_Removed` — resource in prod but not sandbox → shows "removed"
   - `TestDiff_Changed` — field differs → shows field-level diff
@@ -146,7 +146,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ### envtest integration tests — `internal/controller/`
 
-- [ ] **1A.4 — ChoApplication lifecycle (envtest)**
+- [x] **1A.4 — ChoApplication lifecycle (envtest)**
   - `TestChoApplication_NamespaceCreation` — create app with 2 domains → 2 namespaces with correct labels
   - `TestChoApplication_NamespaceDeletion` — delete app → namespaces cascade-deleted via owner refs
   - `TestChoApplication_DomainAddRemove` — add domain → new namespace. Remove domain → namespace deleted
@@ -155,7 +155,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestChoApplication_LimitRange` — namespace gets LimitRange matching app policy
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.5 — ChoCompute lifecycle (envtest)**
+- [x] **1A.5 — ChoCompute lifecycle (envtest)**
   - `TestChoCompute_CreatesDeploymentAndService` — ChoCompute → Deployment + ClusterIP Service
   - `TestChoCompute_StatusReflectsReadyReplicas` — status.ready tracks Deployment readiness
   - `TestChoCompute_JobVariant` — variant=job → Job, not Deployment
@@ -166,20 +166,20 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestChoCompute_Deletion` — delete CRD → Deployment+Service cleaned up
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.6 — ChoDatabase lifecycle (envtest, skip SGCluster assertions)**
+- [x] **1A.6 — ChoDatabase lifecycle (envtest, skip SGCluster assertions)**
   - `TestChoDatabase_CredentialSecretCreated` — Secret with host/port/username/password/uri keys
   - `TestChoDatabase_HA_InstanceCount` — ha=true → 2+ instances in compiled output
   - `TestChoDatabase_SingleInstance` — ha=false → 1 instance
   - `TestChoDatabase_Deletion_ArchiveLifecycle` — delete → status=Archived, not removed (skip until Phase 18)
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.7 — ChoQueue and ChoCache lifecycle (envtest)**
+- [x] **1A.7 — ChoQueue and ChoCache lifecycle (envtest)**
   - `TestChoQueue_CredentialSecretCreated` — NATS connection secret
   - `TestChoCache_DeploymentAndService` — Dragonfly resources created
   - `TestChoCache_SizeMapping` — small/medium/large → correct resource requests
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.8 — Network policy reconciliation (envtest)**
+- [x] **1A.8 — Network policy reconciliation (envtest)**
   - `TestNetworkPolicy_ConsumesGeneratesAllowRule` — A consumes B:8080 → A→B:8080 allowed
   - `TestNetworkPolicy_NoConsumeNoAccess` — no declaration → no NetworkPolicy allow-rule
   - `TestNetworkPolicy_SupplyMismatch_StatusError` — A consumes B but B doesn't supply → error in status
@@ -190,7 +190,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestNetworkPolicy_CrossApplicationLinkResources` — `link` produces HTTPRoute + ReferenceGrant + CiliumEnvoyConfig + direct-traffic deny policy (skip until Phase 13.3)
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.9 — Sandbox lifecycle (envtest)**
+- [x] **1A.9 — Sandbox lifecycle (envtest)**
   - `TestSandbox_CreatesIsolatedNamespace` — sandbox namespace `{app}-{domain}-sandbox-{name}`
   - `TestSandbox_CopiesDomainConfig` — sandbox gets domain's compute/db/queue/cache specs
   - `TestSandbox_OwnNetworkPolicy` — sandbox has independent deny-all policy
@@ -199,7 +199,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestSandbox_IdleAutoDestroy` — idle past threshold → warning condition → destroyed (skip until Phase 20.1)
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.10 — Promotion lifecycle (envtest)**
+- [x] **1A.10 — Promotion lifecycle (envtest)**
   - `TestPromotion_StatusLifecycle` — Pending → Approved → Executing → Completed
   - `TestPromotion_InsufficientApprovals` — stays Pending until required approvals met
   - `TestPromotion_ApprovalRoleValidation` — approval from disallowed role does not satisfy policy
@@ -209,7 +209,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestPromotion_ImageScanBlock` — critical CVE → promotion blocked (skip until Phase 14.1)
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.11 — RBAC & membership (envtest)**
+- [x] **1A.11 — RBAC & membership (envtest)**
   - `TestMembership_DeveloperRoleBinding` — developer → edit RoleBinding in sandbox
   - `TestMembership_ViewerRoleBinding` — viewer → view RoleBinding
   - `TestMembership_ProductionViewOnly` — all human roles get view-only in production namespace
@@ -219,7 +219,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `TestMembership_OrgAdmin` — org-admin → admin RoleBinding
   - **Test:** `make test` (envtest)
 
-- [ ] **1A.12 — ChoCluster bootstrap (envtest)**
+- [x] **1A.12 — ChoCluster bootstrap (envtest)**
   - `TestChoCluster_OperatorInstallation` — ChoCluster triggers operator installations (skip operator CRD checks until Phase 12)
   - `TestChoCluster_OperatorReinstallation` — deleted operator → controller reinstalls
   - `TestChoCluster_SizingTemplates` — ChoCluster sizing templates available for resource compilation
@@ -230,7 +230,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ### E2E scenario tests — `test/e2e/`
 
-- [ ] **1A.13 — Developer daily workflow (e2e, Kind+Cilium)**
+- [x] **1A.13 — Developer daily workflow (e2e, Kind+Cilium)**
   - `TestE2E_DeveloperWorkflow` — full scenario:
     1. Create ChoApplication with 2 domains (payments, auth)
     2. `chorister sandbox create --domain payments --name alice`
@@ -245,7 +245,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - Skip sub-steps that depend on unimplemented phases; run the rest
   - **Test:** `make e2e`
 
-- [ ] **1A.14 — Network isolation (e2e, Kind+Cilium)**
+- [x] **1A.14 — Network isolation (e2e, Kind+Cilium)**
   - `TestE2E_NetworkIsolation` — full scenario:
     1. Create app with payments (consumes auth:8080) and auth (supplies :8080)
     2. Deploy test pods in both namespaces
@@ -255,7 +255,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
     6. Assert all outbound traffic except declared egress blocked (skip FQDN until Phase 13)
   - **Test:** `make e2e`
 
-- [ ] **1A.15 — Cross-application link flow (e2e, Kind+Cilium)**
+- [x] **1A.15 — Cross-application link flow (e2e, Kind+Cilium)**
   - `TestE2E_CrossApplicationLink` — app A links to app B through the internal gateway:
     1. Create two applications with an approved bilateral `link`
     2. Assert direct pod-to-pod cross-application traffic is blocked
@@ -264,20 +264,20 @@ Write the full test suite **before** implementing reconciliation logic. Every im
     5. Assert rate limiting / auth policy manifests are attached (skip live rate-limit verification until Phase 13.3)
   - **Test:** `make e2e`
 
-- [ ] **1A.16 — Production safety (e2e)**
+- [x] **1A.16 — Production safety (e2e)**
   - `TestE2E_CannotApplyToProd` — `chorister apply` targeting production namespace → rejected
   - `TestE2E_PromotionRequiresApproval` — promotion with 0 approvals does not modify prod
   - `TestE2E_ProductionRBACViewOnly` — developer ServiceAccount cannot create/update resources in production namespace
   - **Test:** `make e2e`
 
-- [ ] **1A.17 — Compliance and policy enforcement (e2e, skip per profile)**
+- [x] **1A.17 — Compliance and policy enforcement (e2e, skip per profile)**
   - `TestE2E_EssentialCompliance` — no privileged pods, non-root enforced (skip until Phase 10)
   - `TestE2E_StandardCompliance` — adds image scanning gate on promotion (skip until Phase 14)
   - `TestE2E_RegulatedCompliance` — seccomp, AppArmor, Tetragon TracingPolicy (skip until Phase 15.2)
   - `TestE2E_IngressRequiresAuth` — internet ingress without auth → rejected (skip until Phase 10.3)
   - **Test:** `make e2e`
 
-- [ ] **1A.18 — Incident response and archive safety (e2e, skip where deferred)**
+- [x] **1A.18 — Incident response and archive safety (e2e, skip where deferred)**
   - `TestE2E_AdminIsolateDomain` — `chorister admin isolate` tightens NetworkPolicy and freezes promotions (skip until incident workflow lands)
   - `TestE2E_ArchivedResourceBlocksPromotion` — removing a production database archives it and any dependent compute promotion is rejected until refs are removed (skip until Phase 18)
   - `TestE2E_AdminDeleteArchivedResource` — archived stateful resource requires explicit admin delete after retention window (skip until Phase 18)
@@ -285,7 +285,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ### CLI unit tests — `cmd/chorister/`
 
-- [ ] **1A.19 — CLI argument parsing and safety rails**
+- [x] **1A.19 — CLI argument parsing and safety rails**
   - `TestCLI_ApplyRefusesProductionNamespace` — hardcoded rejection for prod targets
   - `TestCLI_ApplyRequiresSandboxFlag` — apply without `--sandbox` → error
   - `TestCLI_SandboxCreateRequiresDomain` — `sandbox create` without `--domain` → error

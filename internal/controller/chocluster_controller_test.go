@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -79,6 +80,92 @@ var _ = Describe("ChoCluster Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// 1A.12 — ChoCluster bootstrap (envtest)
+	// -----------------------------------------------------------------------
+
+	Context("1A.12 — ChoCluster bootstrap", func() {
+		It("should trigger operator installations", func() {
+			Skip("awaiting Phase 12.1: ChoCluster reconciler — operator lifecycle")
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "bootstrap-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					Operators: &choristerv1alpha1.OperatorVersions{
+						Kro:         "latest",
+						StackGres:   "latest",
+						NATS:        "latest",
+						Dragonfly:   "latest",
+						CertManager: "latest",
+						Gatekeeper:  "latest",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert operator status tracked
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Status.OperatorStatus).NotTo(BeEmpty())
+		})
+
+		It("should reinstall deleted operator", func() {
+			Skip("awaiting Phase 12.1: ChoCluster reconciler — operator lifecycle")
+
+			// Deleted operator → controller reinstalls on next reconciliation
+		})
+
+		It("should make sizing templates available for resource compilation", func() {
+			Skip("awaiting Phase 21.1: Sizing template definitions")
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "sizing-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					SizingTemplates: map[string]choristerv1alpha1.SizingTemplateSet{
+						"database": {
+							Templates: map[string]choristerv1alpha1.SizingTemplate{
+								"small":  {CPU: resource.MustParse("250m"), Memory: resource.MustParse("512Mi")},
+								"medium": {CPU: resource.MustParse("1"), Memory: resource.MustParse("2Gi")},
+								"large":  {CPU: resource.MustParse("4"), Memory: resource.MustParse("8Gi")},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			// Assert sizing templates readable
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Spec.SizingTemplates).To(HaveKey("database"))
+			Expect(cluster.Spec.SizingTemplates["database"].Templates).To(HaveKey("medium"))
+		})
+
+		It("should expose FinOps cost rates", func() {
+			Skip("awaiting Phase 20.2: FinOps cost estimation engine")
+
+			// Cost rates readable from ChoCluster spec
+		})
+
+		It("should install default sizing templates on bootstrap", func() {
+			Skip("awaiting Phase 21.1: Sizing template definitions")
+
+			// chorister setup / ChoCluster bootstrap creates baseline templates
+		})
+
+		It("should block reconciliation on audit write failure", func() {
+			Skip("awaiting Phase 11.2: Audit event logging to Loki")
+
+			// Synchronous audit sink failure marks reconcile as failed
 		})
 	})
 })
