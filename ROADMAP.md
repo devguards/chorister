@@ -367,17 +367,17 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 5: Queue and cache compilation
 
-- [ ] **5.1 — Install NATS operator in test cluster**
+- [x] **5.1 — Install NATS operator in test cluster**
   - Add NATS operator install to test cluster script
   - **Test:** NATS CRDs available in cluster
 
-- [ ] **5.2 — ChoQueue reconciler → NATS JetStream**
+- [x] **5.2 — ChoQueue reconciler → NATS JetStream**
   - Watch `ChoQueue` CRD
   - Compile to kro RGD + instance that render NATS JetStream resources (StatefulSet or operator CR)
   - Expose connection credentials as Secret
   - **Test:** create ChoQueue → assert NATS resources exist → verify connectivity from a test pod
 
-- [ ] **5.3 — ChoCache reconciler → Dragonfly**
+- [x] **5.3 — ChoCache reconciler → Dragonfly**
   - Watch `ChoCache` CRD
   - Compile to kro RGD + instance that render Dragonfly Deployment + Service
   - Size mapping: small/medium/large → resource requests
@@ -387,17 +387,17 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 6: Network resource — consumes/supplies enforcement
 
-- [ ] **6.1 — Compile consumes/supplies → NetworkPolicy**
+- [x] **6.1 — Compile consumes/supplies → NetworkPolicy**
   - When ChoApplication has `consumes`/`supplies` declarations, generate allow-rules in NetworkPolicy
   - Only the declared port + namespace selector. Everything else stays denied.
   - **Test:** domain A consumes domain B on port 8080 → deploy pods in both → pod in A can reach B:8080 → pod in A cannot reach B:9090 → pod in C cannot reach B:8080
 
-- [ ] **6.2 — Supply/consume validation**
+- [x] **6.2 — Supply/consume validation**
   - If domain A consumes domain B, but B does not supply → reconciliation error on ChoApplication status
   - Cycle detection: A→B→C→A → error
   - **Test:** create application with mismatched consumes/supplies → assert error in `.status.conditions`. Fix the mismatch → assert error clears.
 
-- [ ] **6.3 — CiliumNetworkPolicy for L7 filtering**
+- [x] **6.3 — CiliumNetworkPolicy for L7 filtering**
   - For domains with `sensitivity = "restricted"`, generate CiliumNetworkPolicy with L7 HTTP path rules
   - **Test:** create restricted domain with L7 rules → assert CiliumNetworkPolicy exists → verify path-level filtering (allowed path works, disallowed path is blocked)
 

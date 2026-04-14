@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,13 +34,13 @@ import (
 
 var _ = Describe("ChoCache Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+		const resourceName = "test-cache-resource"
 
 		ctx := context.Background()
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
 		chocache := &choristerv1alpha1.ChoCache{}
 
@@ -95,8 +94,6 @@ var _ = Describe("ChoCache Controller", func() {
 
 	Context("1A.7 — ChoCache lifecycle", func() {
 		It("should create Dragonfly Deployment and Service", func() {
-			Skip("awaiting Phase 5.3: ChoCache reconciler → Dragonfly")
-
 			cache := &choristerv1alpha1.ChoCache{
 				ObjectMeta: metav1.ObjectMeta{Name: "sessions", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoCacheSpec{
@@ -117,18 +114,25 @@ var _ = Describe("ChoCache Controller", func() {
 			// Assert Deployment created
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sessions", Namespace: "default"}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("dragonfly"))
 
 			// Assert Service created
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sessions", Namespace: "default"}, svc)).To(Succeed())
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(6379)))
 		})
 
 		It("should map size to correct resource requests", func() {
-			Skip("awaiting Phase 5.3: ChoCache reconciler → Dragonfly")
+			sizes := map[string]string{
+				"small":  "128Mi",
+				"medium": "512Mi",
+				"large":  "1Gi",
+			}
 
-			for _, size := range []string{"small", "medium", "large"} {
+			for size, expectedMem := range sizes {
 				cache := &choristerv1alpha1.ChoCache{
-					ObjectMeta: metav1.ObjectMeta{Name: "cache-" + size, Namespace: "default"},
+					ObjectMeta: metav1.ObjectMeta{Name: "cache-size-" + size, Namespace: "default"},
 					Spec: choristerv1alpha1.ChoCacheSpec{
 						Application: "myapp",
 						Domain:      "auth",
@@ -143,13 +147,65 @@ var _ = Describe("ChoCache Controller", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				deploy := &appsv1.DeploymentList{}
-				Expect(k8sClient.List(ctx, deploy, client.InNamespace("default"),
-					client.MatchingLabels{"chorister.dev/cache": "cache-" + size})).To(Succeed())
-				Expect(deploy.Items).NotTo(BeEmpty())
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: "default"}, deploy)).To(Succeed())
+				container := deploy.Spec.Template.Spec.Containers[0]
+				memReq := container.Resources.Requests.Memory()
+				Expect(memReq.String()).To(Equal(expectedMem))
 
 				_ = k8sClient.Delete(ctx, cache)
 			}
+		})
+
+		It("should create credential Secret for Redis connection", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "sessions-cred", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "auth--cache--sessions-cred-credentials", Namespace: "default",
+			}, secret)).To(Succeed())
+			Expect(secret.Data).To(HaveKey("host"))
+			Expect(secret.Data).To(HaveKey("port"))
+			Expect(secret.Data).To(HaveKey("uri"))
+			Expect(string(secret.Data["port"])).To(Equal("6379"))
+		})
+
+		It("should update status after reconciliation", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "sessions-status", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace}, cache)).To(Succeed())
+			Expect(cache.Status.Ready).To(BeTrue())
+			Expect(cache.Status.CredentialsSecretRef).To(Equal("auth--cache--sessions-status-credentials"))
 		})
 	})
 })

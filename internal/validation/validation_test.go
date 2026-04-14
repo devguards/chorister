@@ -17,12 +17,17 @@ limitations under the License.
 package validation
 
 import (
+	"strings"
 	"testing"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 // ---------------------------------------------------------------------------
 // 1A.2 — Validation unit tests
@@ -31,8 +36,6 @@ import (
 // --- Consumes/Supplies ---
 
 func TestValidateConsumesSupplies_Mismatch(t *testing.T) {
-	t.Skip("awaiting Phase 6.2: Supply/consume validation")
-
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners: []string{"owner@example.com"},
@@ -58,13 +61,23 @@ func TestValidateConsumesSupplies_Mismatch(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Call validator, assert error indicating A consumes B but B does not supply
+	errs := ValidateConsumesSupplies(app)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for consumes/supplies mismatch, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if contains(e, "does not declare supplies") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error about missing supplies, got: %v", errs)
+	}
 }
 
 func TestValidateConsumesSupplies_OK(t *testing.T) {
-	t.Skip("awaiting Phase 6.2: Supply/consume validation")
-
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners: []string{"owner@example.com"},
@@ -93,15 +106,15 @@ func TestValidateConsumesSupplies_OK(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Call validator, assert no error
+	errs := ValidateConsumesSupplies(app)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got: %v", errs)
+	}
 }
 
 // --- Cycle detection ---
 
 func TestValidateCycleDetection(t *testing.T) {
-	t.Skip("awaiting Phase 6.2: Supply/consume validation — cycle detection")
-
 	// A→B→C→A forms a cycle
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
@@ -133,13 +146,16 @@ func TestValidateCycleDetection(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Call validator, assert error with cycle path (a→b→c→a)
+	err := ValidateCycleDetection(app)
+	if err == nil {
+		t.Fatal("expected cycle detection error, got nil")
+	}
+	if !contains(err.Error(), "cycle") {
+		t.Fatalf("expected error mentioning cycle, got: %s", err.Error())
+	}
 }
 
 func TestValidateCycleDetection_DAG(t *testing.T) {
-	t.Skip("awaiting Phase 6.2: Supply/consume validation — cycle detection")
-
 	// A→B, A→C, B→C — acyclic
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
@@ -172,8 +188,10 @@ func TestValidateCycleDetection_DAG(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Call validator, assert no error
+	err := ValidateCycleDetection(app)
+	if err != nil {
+		t.Fatalf("expected no cycle error, got: %s", err.Error())
+	}
 }
 
 // --- Ingress auth ---

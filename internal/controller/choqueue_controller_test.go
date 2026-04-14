@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -93,8 +94,6 @@ var _ = Describe("ChoQueue Controller", func() {
 
 	Context("1A.7 — ChoQueue lifecycle", func() {
 		It("should create credential Secret for NATS connection", func() {
-			Skip("awaiting Phase 5.2: ChoQueue reconciler → NATS JetStream")
-
 			queue := &choristerv1alpha1.ChoQueue{
 				ObjectMeta: metav1.ObjectMeta{Name: "events", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoQueueSpec{
@@ -118,6 +117,76 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "payments--queue--events-credentials", Namespace: "default",
 			}, secret)).To(Succeed())
+			Expect(secret.Data).To(HaveKey("host"))
+			Expect(secret.Data).To(HaveKey("port"))
+			Expect(secret.Data).To(HaveKey("uri"))
+		})
+
+		It("should create StatefulSet for NATS", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "events-sts", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					Size:        "medium",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert StatefulSet created
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "events-sts", Namespace: "default",
+			}, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("nats:2-alpine"))
+
+			// Assert headless Service created
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "events-sts-headless", Namespace: "default",
+			}, svc)).To(Succeed())
+			Expect(svc.Spec.ClusterIP).To(Equal("None"))
+
+			// Assert client Service created
+			clientSvc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "events-sts", Namespace: "default",
+			}, clientSvc)).To(Succeed())
+		})
+
+		It("should update status after reconciliation", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "events-status", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch and check status
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue)).To(Succeed())
+			Expect(queue.Status.Ready).To(BeTrue())
+			Expect(queue.Status.Lifecycle).To(Equal("Active"))
+			Expect(queue.Status.CredentialsSecretRef).To(Equal("payments--queue--events-status-credentials"))
 		})
 	})
 })

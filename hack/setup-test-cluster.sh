@@ -155,6 +155,19 @@ install_gateway_api_crds() {
 	retry_run 5 2 run kubectl_ctx apply -f "$gateway_api_url"
 }
 
+install_nats_operator() {
+	log "Installing NATS operator"
+	run helm repo add nats https://nats-io.github.io/k8s/helm/charts/ --force-update
+	run helm repo update
+	run helm upgrade --install nats nats/nats \
+		--kube-context "$(kind_context)" \
+		--namespace nats-system \
+		--create-namespace \
+		--set config.jetstream.enabled=true \
+		--wait --timeout 5m
+	log "NATS operator installed"
+}
+
 print_summary() {
 	run cilium_ctx status
 	run kubectl_ctx get nodes -o wide
@@ -198,6 +211,7 @@ main() {
 	install_cilium
 	wait_for_nodes_ready
 	install_gateway_api_crds
+	install_nats_operator
 	print_summary
 }
 

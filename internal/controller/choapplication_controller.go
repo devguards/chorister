@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -103,6 +104,13 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		desiredDomains[d.Name] = nsName
 	}
 
+	// Validate consumes/supplies declarations
+	validationErrors := validateConsumesSupplies(app)
+	cycleErr := validateNoCycles(app)
+	if cycleErr != nil {
+		validationErrors = append(validationErrors, cycleErr.Error())
+	}
+
 	// Reconcile namespaces and their resources
 	for _, domain := range app.Spec.Domains {
 		nsName := desiredDomains[domain.Name]
@@ -112,6 +120,16 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 
 		if err := r.ensureDefaultDenyNetworkPolicy(ctx, app, nsName); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Create allow-rules based on consumes declarations
+		if err := r.ensureConsumesNetworkPolicies(ctx, app, domain, desiredDomains); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Create ingress-allow rules for domains that supply
+		if err := r.ensureSuppliesNetworkPolicies(ctx, app, domain, desiredDomains); err != nil {
 			return ctrl.Result{}, err
 		}
 
@@ -141,6 +159,25 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Update status
 	app.Status.DomainNamespaces = desiredDomains
 	app.Status.Phase = "Active"
+
+	if len(validationErrors) > 0 {
+		setCondition(&app.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            strings.Join(validationErrors, "; "),
+			ObservedGeneration: app.Generation,
+		})
+	} else {
+		setCondition(&app.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionTrue,
+			Reason:             "Valid",
+			Message:            "All consumes/supplies declarations are valid",
+			ObservedGeneration: app.Generation,
+		})
+	}
+
 	setCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
@@ -402,6 +439,295 @@ func setCondition(conditions *[]metav1.Condition, condition metav1.Condition) {
 		}
 	}
 	*conditions = append(*conditions, condition)
+}
+
+// ensureConsumesNetworkPolicies creates NetworkPolicies allowing egress from a consumer
+// domain to the supplied domain's namespace on the declared port.
+func (r *ChoApplicationReconciler) ensureConsumesNetworkPolicies(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec, domainNamespaces map[string]string) error {
+	consumerNs := domainNamespaces[domain.Name]
+
+	for _, consume := range domain.Consumes {
+		_, exists := domainNamespaces[consume.Domain]
+		if !exists {
+			continue // validation will catch this
+		}
+
+		// Find the supplier domain to check it actually supplies on this port
+		supplierDomain := findDomain(app, consume.Domain)
+		if supplierDomain == nil || supplierDomain.Supplies == nil || supplierDomain.Supplies.Port != consume.Port {
+			continue // validation will catch mismatches
+		}
+
+		tcp := corev1.ProtocolTCP
+		port := intstr.FromInt32(int32(consume.Port))
+		policyName := fmt.Sprintf("allow-egress-to-%s-%d", consume.Domain, consume.Port)
+
+		desired := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      policyName,
+				Namespace: consumerNs,
+				Labels: map[string]string{
+					labelApplication:            app.Name,
+					"chorister.dev/netpol-type": "consumes-egress",
+				},
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{}, // all pods in consumer ns
+				PolicyTypes: []networkingv1.PolicyType{
+					networkingv1.PolicyTypeEgress,
+				},
+				Egress: []networkingv1.NetworkPolicyEgressRule{
+					{
+						To: []networkingv1.NetworkPolicyPeer{
+							{
+								NamespaceSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										labelApplication: app.Name,
+										labelDomain:      consume.Domain,
+									},
+								},
+							},
+						},
+						Ports: []networkingv1.NetworkPolicyPort{
+							{Protocol: &tcp, Port: &port},
+						},
+					},
+				},
+			},
+		}
+
+		existing := &networkingv1.NetworkPolicy{}
+		err := r.Get(ctx, types.NamespacedName{Name: policyName, Namespace: consumerNs}, existing)
+		if errors.IsNotFound(err) {
+			if err := r.Create(ctx, desired); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if !equality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+			existing.Spec = desired.Spec
+			existing.Labels = desired.Labels
+			if err := r.Update(ctx, existing); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Clean up stale consumes policies: remove egress allow policies for consumes
+	// that no longer exist in the spec.
+	existingPolicies := &networkingv1.NetworkPolicyList{}
+	if err := r.List(ctx, existingPolicies, client.InNamespace(consumerNs),
+		client.MatchingLabels{"chorister.dev/netpol-type": "consumes-egress"}); err != nil {
+		return err
+	}
+
+	desiredNames := make(map[string]bool)
+	for _, consume := range domain.Consumes {
+		desiredNames[fmt.Sprintf("allow-egress-to-%s-%d", consume.Domain, consume.Port)] = true
+	}
+
+	for i := range existingPolicies.Items {
+		if !desiredNames[existingPolicies.Items[i].Name] {
+			if err := r.Delete(ctx, &existingPolicies.Items[i]); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// ensureSuppliesNetworkPolicies creates NetworkPolicies allowing ingress to a supplier
+// domain from consumer domains on the declared port.
+func (r *ChoApplicationReconciler) ensureSuppliesNetworkPolicies(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec, domainNamespaces map[string]string) error {
+	if domain.Supplies == nil {
+		// Clean up any stale supplies policies
+		supplierNs := domainNamespaces[domain.Name]
+		existingPolicies := &networkingv1.NetworkPolicyList{}
+		if err := r.List(ctx, existingPolicies, client.InNamespace(supplierNs),
+			client.MatchingLabels{"chorister.dev/netpol-type": "supplies-ingress"}); err != nil {
+			return err
+		}
+		for i := range existingPolicies.Items {
+			if err := r.Delete(ctx, &existingPolicies.Items[i]); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
+		}
+		return nil
+	}
+
+	supplierNs := domainNamespaces[domain.Name]
+
+	// Find all consuming domains
+	var consumers []choristerv1alpha1.DomainSpec
+	for _, d := range app.Spec.Domains {
+		for _, consume := range d.Consumes {
+			if consume.Domain == domain.Name && consume.Port == domain.Supplies.Port {
+				consumers = append(consumers, d)
+				break
+			}
+		}
+	}
+
+	if len(consumers) == 0 {
+		return nil
+	}
+
+	tcp := corev1.ProtocolTCP
+	port := intstr.FromInt32(int32(domain.Supplies.Port))
+
+	// Build ingress peers from all consumer namespaces
+	var ingressPeers []networkingv1.NetworkPolicyPeer
+	for _, consumer := range consumers {
+		ingressPeers = append(ingressPeers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					labelApplication: app.Name,
+					labelDomain:      consumer.Name,
+				},
+			},
+		})
+	}
+
+	policyName := fmt.Sprintf("allow-ingress-from-consumers-%d", domain.Supplies.Port)
+	desired := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policyName,
+			Namespace: supplierNs,
+			Labels: map[string]string{
+				labelApplication:            app.Name,
+				"chorister.dev/netpol-type": "supplies-ingress",
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{}, // all pods in supplier ns
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+			},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From:  ingressPeers,
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+				},
+			},
+		},
+	}
+
+	existing := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Name: policyName, Namespace: supplierNs}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	if !equality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+		existing.Spec = desired.Spec
+		existing.Labels = desired.Labels
+		return r.Update(ctx, existing)
+	}
+	return nil
+}
+
+// findDomain returns the DomainSpec with the given name, or nil.
+func findDomain(app *choristerv1alpha1.ChoApplication, name string) *choristerv1alpha1.DomainSpec {
+	for i := range app.Spec.Domains {
+		if app.Spec.Domains[i].Name == name {
+			return &app.Spec.Domains[i]
+		}
+	}
+	return nil
+}
+
+// validateConsumesSupplies checks that every consumes reference has a matching supplies declaration.
+func validateConsumesSupplies(app *choristerv1alpha1.ChoApplication) []string {
+	domainMap := make(map[string]*choristerv1alpha1.DomainSpec, len(app.Spec.Domains))
+	for i := range app.Spec.Domains {
+		domainMap[app.Spec.Domains[i].Name] = &app.Spec.Domains[i]
+	}
+
+	var errs []string
+	for _, domain := range app.Spec.Domains {
+		for _, consume := range domain.Consumes {
+			supplier, exists := domainMap[consume.Domain]
+			if !exists {
+				errs = append(errs, fmt.Sprintf("domain %q consumes %q but domain %q does not exist", domain.Name, consume.Domain, consume.Domain))
+				continue
+			}
+			if supplier.Supplies == nil {
+				errs = append(errs, fmt.Sprintf("domain %q consumes %q but %q does not declare supplies", domain.Name, consume.Domain, consume.Domain))
+				continue
+			}
+			if supplier.Supplies.Port != consume.Port {
+				errs = append(errs, fmt.Sprintf("domain %q consumes %q on port %d but %q supplies on port %d", domain.Name, consume.Domain, consume.Port, consume.Domain, supplier.Supplies.Port))
+			}
+		}
+	}
+	return errs
+}
+
+// validateNoCycles checks for circular dependencies in the consumes graph.
+func validateNoCycles(app *choristerv1alpha1.ChoApplication) error {
+	// Build adjacency list
+	graph := make(map[string][]string)
+	for _, domain := range app.Spec.Domains {
+		for _, consume := range domain.Consumes {
+			graph[domain.Name] = append(graph[domain.Name], consume.Domain)
+		}
+	}
+
+	// DFS-based cycle detection
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in current path
+		black = 2 // fully explored
+	)
+
+	color := make(map[string]int)
+	parent := make(map[string]string)
+
+	var dfs func(node string) (string, bool)
+	dfs = func(node string) (string, bool) {
+		color[node] = gray
+		for _, neighbor := range graph[node] {
+			if color[neighbor] == gray {
+				// Found a cycle — reconstruct path
+				cycle := []string{neighbor, node}
+				cur := node
+				for cur != neighbor {
+					cur = parent[cur]
+					cycle = append(cycle, cur)
+				}
+				// Reverse to get proper order
+				for i, j := 0, len(cycle)-1; i < j; i, j = i+1, j-1 {
+					cycle[i], cycle[j] = cycle[j], cycle[i]
+				}
+				return strings.Join(cycle, " → "), true
+			}
+			if color[neighbor] == white {
+				parent[neighbor] = node
+				if path, found := dfs(neighbor); found {
+					return path, true
+				}
+			}
+		}
+		color[node] = black
+		return "", false
+	}
+
+	for _, domain := range app.Spec.Domains {
+		if color[domain.Name] == white {
+			if path, found := dfs(domain.Name); found {
+				return fmt.Errorf("dependency cycle detected: %s", path)
+			}
+		}
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
