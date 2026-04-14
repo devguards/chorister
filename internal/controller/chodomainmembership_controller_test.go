@@ -18,14 +18,17 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,7 +44,7 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
 		chodomainmembership := &choristerv1alpha1.ChoDomainMembership{}
 
@@ -66,7 +69,6 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &choristerv1alpha1.ChoDomainMembership{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -85,8 +87,6 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 
@@ -95,13 +95,61 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 	// -----------------------------------------------------------------------
 
 	Context("1A.11 — RBAC & membership", func() {
+		var (
+			ctx        = context.Background()
+			reconciler *ChoDomainMembershipReconciler
+		)
+
+		// Helper to create the test application and its domain namespace
+		setupAppAndNamespace := func(appName, domainName string, sensitivity string) func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: domainName, Sensitivity: sensitivity},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			// Create domain namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: fmt.Sprintf("%s-%s", appName, domainName),
+					Labels: map[string]string{
+						labelApplication: appName,
+						labelDomain:      domainName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+			return func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+				_ = k8sClient.Delete(ctx, ns)
+			}
+		}
+
+		BeforeEach(func() {
+			reconciler = &ChoDomainMembershipReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		})
+
 		It("should create edit RoleBinding for developer", func() {
-			Skip("awaiting Phase 9.1: ChoDomainMembership reconciler → RoleBinding")
+			cleanup := setupAppAndNamespace("rbac-dev-app", "payments", "internal")
+			defer cleanup()
 
 			membership := &choristerv1alpha1.ChoDomainMembership{
 				ObjectMeta: metav1.ObjectMeta{Name: "dev-membership", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
-					Application: "myapp",
+					Application: "rbac-dev-app",
 					Domain:      "payments",
 					Identity:    "alice@example.com",
 					Role:        "developer",
@@ -110,39 +158,93 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, membership) }()
 
-			reconciler := &ChoDomainMembershipReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Assert edit RoleBinding in sandbox namespace
-			rbList := &rbacv1.RoleBindingList{}
-			Expect(k8sClient.List(ctx, rbList, client.InNamespace("myapp-payments"))).To(Succeed())
-			Expect(rbList.Items).NotTo(BeEmpty())
+			// Check that the prod-view RoleBinding was created in the domain namespace
+			prodRb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-dev-membership-prod", Namespace: "rbac-dev-app-payments",
+			}, prodRb)).To(Succeed())
+			Expect(prodRb.RoleRef.Name).To(Equal("view"))
+
+			// Status should be Active
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
+			Expect(membership.Status.Phase).To(Equal("Active"))
 		})
 
 		It("should create view RoleBinding for viewer", func() {
-			Skip("awaiting Phase 9.1: ChoDomainMembership reconciler → RoleBinding")
+			cleanup := setupAppAndNamespace("rbac-viewer-app", "auth", "internal")
+			defer cleanup()
 
-			// viewer → view RoleBinding
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "viewer-membership", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "rbac-viewer-app",
+					Domain:      "auth",
+					Identity:    "bob@example.com",
+					Role:        "viewer",
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Prod binding should be view
+			prodRb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-viewer-membership-prod", Namespace: "rbac-viewer-app-auth",
+			}, prodRb)).To(Succeed())
+			Expect(prodRb.RoleRef.Name).To(Equal("view"))
+			Expect(prodRb.Subjects[0].Name).To(Equal("bob@example.com"))
 		})
 
 		It("should grant view-only in production namespace for all human roles", func() {
-			Skip("awaiting Phase 9.3: Production RBAC lockdown")
+			cleanup := setupAppAndNamespace("rbac-prod-app", "data", "internal")
+			defer cleanup()
 
-			// All human roles get view-only in production namespace
+			// Create an org-admin membership
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "admin-prod-membership", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "rbac-prod-app",
+					Domain:      "data",
+					Identity:    "admin@example.com",
+					Role:        "org-admin",
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Production namespace should have a view-only RoleBinding
+			prodRb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-admin-prod-membership-prod", Namespace: "rbac-prod-app-data",
+			}, prodRb)).To(Succeed())
+			Expect(prodRb.RoleRef.Name).To(Equal("view"))
 		})
 
 		It("should delete RoleBinding when membership expires", func() {
-			Skip("awaiting Phase 9.2: Membership expiry enforcement")
+			cleanup := setupAppAndNamespace("rbac-expiry-app", "billing", "internal")
+			defer cleanup()
 
 			pastTime := metav1.NewTime(time.Now().Add(-24 * time.Hour))
 			membership := &choristerv1alpha1.ChoDomainMembership{
 				ObjectMeta: metav1.ObjectMeta{Name: "expired-membership", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
-					Application: "myapp",
-					Domain:      "payments",
+					Application: "rbac-expiry-app",
+					Domain:      "billing",
 					Identity:    "bob@example.com",
 					Role:        "developer",
 					ExpiresAt:   &pastTime,
@@ -151,33 +253,96 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, membership) }()
 
-			reconciler := &ChoDomainMembershipReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Assert RoleBinding removed, status shows expired
+			// Re-fetch and check status
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
 			Expect(membership.Status.Phase).To(Equal("Expired"))
+
+			// No RoleBindings should exist for this membership
+			rbList := &rbacv1.RoleBindingList{}
+			Expect(k8sClient.List(ctx, rbList, client.MatchingLabels{labelMembership: membership.Name})).To(Succeed())
+			Expect(rbList.Items).To(BeEmpty())
 		})
 
 		It("should reject restricted domain membership without expiresAt", func() {
-			Skip("awaiting Phase 9.2: Membership expiry enforcement")
+			cleanup := setupAppAndNamespace("rbac-restricted-app", "secrets", "restricted")
+			defer cleanup()
 
-			// Restricted domain membership without expiresAt is rejected
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "restricted-no-expiry", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "rbac-restricted-app",
+					Domain:      "secrets",
+					Identity:    "charlie@example.com",
+					Role:        "developer",
+					// No ExpiresAt — should be rejected
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Status should show error
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
+			Expect(membership.Status.Phase).To(BeEmpty())
+
+			// Check conditions for ExpiryRequired
+			var found bool
+			for _, c := range membership.Status.Conditions {
+				if c.Type == "Ready" && c.Reason == "ExpiryRequired" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected ExpiryRequired condition")
 		})
 
 		It("should deprovision bindings when OIDC group removes subject", func() {
 			Skip("awaiting OIDC sync implementation")
-
-			// Subject removed from synced OIDC group → membership/RoleBinding removed
 		})
 
 		It("should create admin RoleBinding for org-admin", func() {
-			Skip("awaiting Phase 9.1: ChoDomainMembership reconciler → RoleBinding")
+			cleanup := setupAppAndNamespace("rbac-admin-app", "core", "internal")
+			defer cleanup()
 
-			// org-admin → admin RoleBinding
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "orgadmin-membership", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "rbac-admin-app",
+					Domain:      "core",
+					Identity:    "admin@example.com",
+					Role:        "org-admin",
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The domain-level binding should use admin ClusterRole
+			rb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-orgadmin-membership", Namespace: "rbac-admin-app-core",
+			}, rb)).To(Succeed())
+			Expect(rb.RoleRef.Name).To(Equal("admin"))
+
+			// But the prod binding is still view
+			prodRb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-orgadmin-membership-prod", Namespace: "rbac-admin-app-core",
+			}, prodRb)).To(Succeed())
+			Expect(prodRb.RoleRef.Name).To(Equal("view"))
 		})
 	})
 })

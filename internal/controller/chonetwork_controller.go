@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -34,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/validation"
 )
 
 // ChoNetworkReconciler reconciles a ChoNetwork object
@@ -45,6 +47,7 @@ type ChoNetworkReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state to match the desired ChoNetwork spec.
@@ -57,6 +60,39 @@ func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Compile-time guardrails: validate ingress auth and egress wildcard
+	var validationErrors []string
+
+	validationErrors = append(validationErrors, validation.ValidateIngressAuth(network)...)
+	validationErrors = append(validationErrors, validation.ValidateEgressWildcard(network)...)
+
+	// Validate against application policy (allowed IdPs)
+	app := &choristerv1alpha1.ChoApplication{}
+	appKey := types.NamespacedName{Name: network.Spec.Application, Namespace: network.Namespace}
+	if err := r.Get(ctx, appKey, app); err == nil {
+		validationErrors = append(validationErrors, validation.ValidateIngressAllowedIdP(network, app.Spec.Policy)...)
+	}
+
+	if len(validationErrors) > 0 {
+		// Re-fetch before status update
+		if err := r.Get(ctx, req.NamespacedName, network); err != nil {
+			return ctrl.Result{}, err
+		}
+		network.Status.Ready = false
+		setCondition(&network.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "ValidationFailed",
+			Message:            strings.Join(validationErrors, "; "),
+			ObservedGeneration: network.Generation,
+		})
+		if err := r.Status().Update(ctx, network); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("ChoNetwork validation failed", "name", network.Name, "errors", validationErrors)
+		return ctrl.Result{}, nil
 	}
 
 	// Reconcile ingress NetworkPolicy if ingress spec is defined

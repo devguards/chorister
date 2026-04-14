@@ -36,6 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/validation"
 )
 
 const (
@@ -110,6 +111,9 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if cycleErr != nil {
 		validationErrors = append(validationErrors, cycleErr.Error())
 	}
+
+	// Validate compliance escalation (domain sensitivity vs app compliance)
+	validationErrors = append(validationErrors, validation.ValidateComplianceEscalation(app)...)
 
 	// Reconcile namespaces and their resources
 	for _, domain := range app.Spec.Domains {

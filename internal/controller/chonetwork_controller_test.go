@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -348,6 +349,128 @@ var _ = Describe("ChoNetwork Controller", func() {
 			Skip("awaiting Phase 13.3: Cross-application links via Gateway API")
 
 			// Link produces HTTPRoute + ReferenceGrant + CiliumEnvoyConfig + direct-traffic deny
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// 10.3 — Compile-time guardrails (envtest integration)
+	// -----------------------------------------------------------------------
+
+	Context("10.3 — Compile-time guardrails", func() {
+		It("should reject internet ingress without auth block", func() {
+			// Create namespace for the test
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "guardrail-noauth-payments"}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "noauth-ingress", Namespace: "guardrail-noauth-payments"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "guardrail-noauth",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						// No Auth — should fail
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Status should show validation failure
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: network.Name, Namespace: network.Namespace}, network)).To(Succeed())
+			Expect(network.Status.Ready).To(BeFalse())
+
+			var readyCondition *metav1.Condition
+			for i := range network.Status.Conditions {
+				if network.Status.Conditions[i].Type == "Ready" {
+					readyCondition = &network.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal("ValidationFailed"))
+			Expect(readyCondition.Message).To(ContainSubstring("requires an auth block"))
+		})
+
+		It("should accept internet ingress with auth block", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "guardrail-auth-payments"}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "auth-ingress", Namespace: "guardrail-auth-payments"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "guardrail-auth",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						Auth: &choristerv1alpha1.NetworkAuthSpec{
+							JWT: &choristerv1alpha1.JWTAuthSpec{
+								Issuer:  "https://auth.example.com",
+								JWKSUri: "https://auth.example.com/.well-known/jwks.json",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: network.Name, Namespace: network.Namespace}, network)).To(Succeed())
+			Expect(network.Status.Ready).To(BeTrue())
+		})
+
+		It("should reject wildcard egress", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "guardrail-egress-payments"}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "wildcard-egress", Namespace: "guardrail-egress-payments"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "guardrail-egress",
+					Domain:      "payments",
+					Egress: &choristerv1alpha1.NetworkEgressSpec{
+						Allowlist: []string{"*"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: network.Name, Namespace: network.Namespace}, network)).To(Succeed())
+			Expect(network.Status.Ready).To(BeFalse())
+			var readyCondition *metav1.Condition
+			for i := range network.Status.Conditions {
+				if network.Status.Conditions[i].Type == "Ready" {
+					readyCondition = &network.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Message).To(ContainSubstring("wildcard egress"))
 		})
 	})
 })

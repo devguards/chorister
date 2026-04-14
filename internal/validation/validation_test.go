@@ -23,6 +23,7 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func contains(s, substr string) bool {
@@ -197,9 +198,8 @@ func TestValidateCycleDetection_DAG(t *testing.T) {
 // --- Ingress auth ---
 
 func TestValidateIngressRequiresAuth(t *testing.T) {
-	t.Skip("awaiting Phase 10.3: Compile-time guardrails")
-
 	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-auth-ingress"},
 		Spec: choristerv1alpha1.ChoNetworkSpec{
 			Application: "myapp",
 			Domain:      "payments",
@@ -211,13 +211,36 @@ func TestValidateIngressRequiresAuth(t *testing.T) {
 		},
 	}
 
-	_ = network
-	// TODO: Assert compile error: internet ingress without auth block
+	errs := ValidateIngressAuth(network)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for internet ingress without auth, got none")
+	}
+	if !contains(errs[0], "requires an auth block") {
+		t.Fatalf("expected error about auth block, got: %v", errs)
+	}
+}
+
+func TestValidateIngressRequiresAuth_NonInternet(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal-ingress"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internal",
+				Port: 8080,
+				// No Auth — OK for non-internet
+			},
+		},
+	}
+
+	errs := ValidateIngressAuth(network)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for non-internet ingress, got: %v", errs)
+	}
 }
 
 func TestValidateIngressAllowedIdP(t *testing.T) {
-	t.Skip("awaiting Phase 10.3: Compile-time guardrails")
-
 	appPolicy := choristerv1alpha1.ApplicationPolicy{
 		Compliance: "standard",
 		Promotion: choristerv1alpha1.PromotionPolicy{
@@ -234,6 +257,7 @@ func TestValidateIngressAllowedIdP(t *testing.T) {
 	}
 
 	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "unapproved-idp"},
 		Spec: choristerv1alpha1.ChoNetworkSpec{
 			Application: "myapp",
 			Domain:      "payments",
@@ -250,16 +274,63 @@ func TestValidateIngressAllowedIdP(t *testing.T) {
 		},
 	}
 
-	_, _ = appPolicy, network
-	// TODO: Assert compile error referencing unapproved IdP, message includes allowed IdPs
+	errs := ValidateIngressAllowedIdP(network, appPolicy)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for unapproved IdP, got none")
+	}
+	if !contains(errs[0], "not in the application's allowed IdP list") {
+		t.Fatalf("expected error about unapproved IdP, got: %v", errs)
+	}
+	if !contains(errs[0], "https://approved.idp.com") {
+		t.Fatalf("expected error to include allowed IdPs, got: %v", errs)
+	}
+}
+
+func TestValidateIngressAllowedIdP_Approved(t *testing.T) {
+	appPolicy := choristerv1alpha1.ApplicationPolicy{
+		Compliance: "standard",
+		Promotion: choristerv1alpha1.PromotionPolicy{
+			RequiredApprovers: 1,
+			AllowedRoles:      []string{"developer"},
+		},
+		Network: &choristerv1alpha1.AppNetworkPolicy{
+			Ingress: &choristerv1alpha1.IngressPolicy{
+				AllowedIdPs: []choristerv1alpha1.IdPReference{
+					{Issuer: "https://approved.idp.com", JWKSUri: "https://approved.idp.com/.well-known/jwks.json"},
+				},
+			},
+		},
+	}
+
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "approved-idp"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internet",
+				Port: 443,
+				Auth: &choristerv1alpha1.NetworkAuthSpec{
+					JWT: &choristerv1alpha1.JWTAuthSpec{
+						Issuer:  "https://approved.idp.com",
+						JWKSUri: "https://approved.idp.com/.well-known/jwks.json",
+					},
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAllowedIdP(network, appPolicy)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for approved IdP, got: %v", errs)
+	}
 }
 
 // --- Egress ---
 
 func TestValidateEgressWildcard(t *testing.T) {
-	t.Skip("awaiting Phase 10.3: Compile-time guardrails")
-
 	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "wildcard-egress"},
 		Spec: choristerv1alpha1.ChoNetworkSpec{
 			Application: "myapp",
 			Domain:      "payments",
@@ -269,8 +340,31 @@ func TestValidateEgressWildcard(t *testing.T) {
 		},
 	}
 
-	_ = network
-	// TODO: Assert compile error: wildcard egress not permitted
+	errs := ValidateEgressWildcard(network)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for wildcard egress, got none")
+	}
+	if !contains(errs[0], "wildcard egress") {
+		t.Fatalf("expected error about wildcard egress, got: %v", errs)
+	}
+}
+
+func TestValidateEgressWildcard_Specific(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "specific-egress"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Egress: &choristerv1alpha1.NetworkEgressSpec{
+				Allowlist: []string{"api.stripe.com"},
+			},
+		},
+	}
+
+	errs := ValidateEgressWildcard(network)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for specific egress, got: %v", errs)
+	}
 }
 
 func TestValidateEgressUnapprovedDestination(t *testing.T) {
@@ -308,8 +402,6 @@ func TestValidateEgressUnapprovedDestination(t *testing.T) {
 // --- Compliance ---
 
 func TestValidateComplianceEscalation(t *testing.T) {
-	t.Skip("awaiting Phase 10.2: Compliance-profile-driven constraints")
-
 	// Domain sensitivity cannot weaken app compliance
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
@@ -330,8 +422,39 @@ func TestValidateComplianceEscalation(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Assert validation error: domain sensitivity cannot weaken app compliance
+	errs := ValidateComplianceEscalation(app)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for compliance escalation, got none")
+	}
+	if !contains(errs[0], "weaker than application compliance") {
+		t.Fatalf("expected error about weakened compliance, got: %v", errs)
+	}
+}
+
+func TestValidateComplianceEscalation_OK(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners: []string{"owner@example.com"},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion: choristerv1alpha1.PromotionPolicy{
+					RequiredApprovers: 1,
+					AllowedRoles:      []string{"developer"},
+				},
+			},
+			Domains: []choristerv1alpha1.DomainSpec{
+				{
+					Name:        "payments",
+					Sensitivity: "confidential", // stronger than essential — OK
+				},
+			},
+		},
+	}
+
+	errs := ValidateComplianceEscalation(app)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got: %v", errs)
+	}
 }
 
 // --- Sizing templates ---
@@ -436,9 +559,8 @@ func TestValidateArchiveRetentionMinimum(t *testing.T) {
 // --- Membership ---
 
 func TestValidateRestrictedMembershipExpiryRequired(t *testing.T) {
-	t.Skip("awaiting Phase 9.2: Membership expiry enforcement")
-
 	membership := &choristerv1alpha1.ChoDomainMembership{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-expiry-membership"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myapp",
 			Domain:      "payments",
@@ -450,8 +572,30 @@ func TestValidateRestrictedMembershipExpiryRequired(t *testing.T) {
 
 	domainSensitivity := "restricted"
 
-	_, _ = membership, domainSensitivity
-	// TODO: Assert validation error: restricted domain membership without expiresAt
+	errs := ValidateRestrictedMembershipExpiry(membership, domainSensitivity)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for restricted membership without expiry, got none")
+	}
+	if !contains(errs[0], "requires expiresAt") {
+		t.Fatalf("expected error about expiresAt, got: %v", errs)
+	}
+}
+
+func TestValidateRestrictedMembershipExpiryRequired_NonRestricted(t *testing.T) {
+	membership := &choristerv1alpha1.ChoDomainMembership{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal-membership"},
+		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Identity:    "alice@example.com",
+			Role:        "developer",
+		},
+	}
+
+	errs := ValidateRestrictedMembershipExpiry(membership, "internal")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for non-restricted domain, got: %v", errs)
+	}
 }
 
 // helper

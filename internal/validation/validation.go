@@ -110,3 +110,121 @@ func ValidateCycleDetection(app *choristerv1alpha1.ChoApplication) error {
 	}
 	return nil
 }
+
+// ValidateIngressAuth checks that internet-facing ingress has an auth block.
+func ValidateIngressAuth(network *choristerv1alpha1.ChoNetwork) []string {
+	if network.Spec.Ingress == nil {
+		return nil
+	}
+	if network.Spec.Ingress.From != "internet" {
+		return nil
+	}
+	if network.Spec.Ingress.Auth == nil || network.Spec.Ingress.Auth.JWT == nil {
+		return []string{fmt.Sprintf(
+			"ChoNetwork %q: internet ingress on port %d requires an auth block with JWT configuration",
+			network.Name, network.Spec.Ingress.Port,
+		)}
+	}
+	return nil
+}
+
+// ValidateIngressAllowedIdP checks that the ingress JWT issuer is in the application's allowed IdP list.
+func ValidateIngressAllowedIdP(network *choristerv1alpha1.ChoNetwork, appPolicy choristerv1alpha1.ApplicationPolicy) []string {
+	if network.Spec.Ingress == nil || network.Spec.Ingress.Auth == nil || network.Spec.Ingress.Auth.JWT == nil {
+		return nil
+	}
+	if appPolicy.Network == nil || appPolicy.Network.Ingress == nil || len(appPolicy.Network.Ingress.AllowedIdPs) == 0 {
+		return nil // no IdP restrictions
+	}
+
+	issuer := network.Spec.Ingress.Auth.JWT.Issuer
+	for _, idp := range appPolicy.Network.Ingress.AllowedIdPs {
+		if idp.Issuer == issuer {
+			return nil
+		}
+	}
+
+	var allowed []string
+	for _, idp := range appPolicy.Network.Ingress.AllowedIdPs {
+		allowed = append(allowed, idp.Issuer)
+	}
+	return []string{fmt.Sprintf(
+		"ChoNetwork %q: JWT issuer %q is not in the application's allowed IdP list. Allowed: %s",
+		network.Name, issuer, strings.Join(allowed, ", "),
+	)}
+}
+
+// ValidateEgressWildcard checks that egress allowlist does not contain wildcards.
+func ValidateEgressWildcard(network *choristerv1alpha1.ChoNetwork) []string {
+	if network.Spec.Egress == nil {
+		return nil
+	}
+	for _, dest := range network.Spec.Egress.Allowlist {
+		if dest == "*" {
+			return []string{fmt.Sprintf(
+				"ChoNetwork %q: wildcard egress (*) is not permitted. Declare specific destinations.",
+				network.Name,
+			)}
+		}
+	}
+	return nil
+}
+
+// ValidateComplianceEscalation checks domain sensitivity doesn't weaken app compliance.
+// Compliance levels: essential < standard < regulated
+// Sensitivity levels: public < internal < confidential < restricted
+// A regulated app cannot have a public domain.
+func ValidateComplianceEscalation(app *choristerv1alpha1.ChoApplication) []string {
+	complianceLevel := complianceToLevel(app.Spec.Policy.Compliance)
+	var errs []string
+
+	for _, domain := range app.Spec.Domains {
+		sensitivityLevel := sensitivityToLevel(domain.Sensitivity)
+		if sensitivityLevel < complianceLevel {
+			errs = append(errs, fmt.Sprintf(
+				"domain %q sensitivity %q is weaker than application compliance %q",
+				domain.Name, domain.Sensitivity, app.Spec.Policy.Compliance,
+			))
+		}
+	}
+	return errs
+}
+
+// ValidateRestrictedMembershipExpiry checks that restricted domain memberships have expiresAt set.
+func ValidateRestrictedMembershipExpiry(membership *choristerv1alpha1.ChoDomainMembership, domainSensitivity string) []string {
+	if domainSensitivity == "restricted" && membership.Spec.ExpiresAt == nil {
+		return []string{fmt.Sprintf(
+			"membership %q for restricted domain requires expiresAt to be set",
+			membership.Name,
+		)}
+	}
+	return nil
+}
+
+func complianceToLevel(c string) int {
+	switch c {
+	case "essential":
+		return 1
+	case "standard":
+		return 2
+	case "regulated":
+		return 3
+	default:
+		return 0
+	}
+}
+
+func sensitivityToLevel(s string) int {
+	switch s {
+	case "public":
+		return 1
+	case "internal":
+		return 2
+	case "confidential":
+		return 3
+	case "restricted":
+		return 4
+	default:
+		return 2 // default to internal
+	}
+}

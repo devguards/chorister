@@ -448,18 +448,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 9: Identity & access control
 
-- [ ] **9.1 — ChoDomainMembership reconciler → RoleBinding**
+- [x] **9.1 — ChoDomainMembership reconciler → RoleBinding**
   - Watch `ChoDomainMembership` CRD
   - Map role to namespace-scoped access in sandboxes: org-admin→admin, domain-admin→admin, developer→edit, viewer→view
   - Create RoleBinding in domain namespace
   - **Test:** create membership for alice as developer in payments → assert RoleBinding exists → verify alice can create pods in payments namespace → verify alice cannot create pods in other namespaces
 
-- [ ] **9.2 — Membership expiry enforcement**
+- [x] **9.2 — Membership expiry enforcement**
   - Controller checks `expiresAt` on reconciliation
   - Expired memberships: delete RoleBinding, update membership status
   - **Test:** create membership with expiresAt in the past → assert RoleBinding is removed → status shows expired
 
-- [ ] **9.3 — Production RBAC lockdown**
+- [x] **9.3 — Production RBAC lockdown**
   - Production namespaces: all human roles get view-only (no edit)
   - Only controller ServiceAccount can modify production resources
   - **Test:** create developer and org-admin memberships → assert both can administer sandboxes as expected → assert both are view-only in production
@@ -468,18 +468,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 10: OPA/Gatekeeper policy enforcement
 
-- [ ] **10.1 — Install Gatekeeper and constraint templates**
+- [x] **10.1 — Install Gatekeeper and constraint templates**
   - Controller installs Gatekeeper during ChoCluster reconciliation
   - Constraint templates: no-privileged, no-hostPID, no-hostNetwork, drop-all-caps, non-root, image-allowlist
   - **Test:** Gatekeeper pods running. Create privileged pod → rejected. Create non-root pod → accepted.
 
-- [ ] **10.2 — Compliance-profile-driven constraints**
+- [x] **10.2 — Compliance-profile-driven constraints**
   - `essential`: basic pod security (no privilege escalation, non-root)
   - `regulated`: add seccomp RuntimeDefault, AppArmor
   - Controller installs the right set of constraints based on ChoApplication compliance profile
   - **Test:** create application with `compliance: essential` → assert Level 1 constraints exist. Update to `compliance: regulated` → assert seccomp constraint added.
 
-- [ ] **10.3 — Compile-time guardrails**
+- [x] **10.3 — Compile-time guardrails**
   - Controller rejects manifests at compile time for: internet ingress without auth, wildcard egress, egress to unapproved destinations
   - **Test:** submit ChoNetwork with ingress from internet and no auth block → assert compile error in status. Add auth block → assert success.
 
