@@ -93,8 +93,6 @@ var _ = Describe("ChoDatabase Controller", func() {
 
 	Context("1A.6 — ChoDatabase lifecycle", func() {
 		It("should create credential Secret with expected keys", func() {
-			Skip("awaiting Phase 4.3: Database secret wiring")
-
 			db := &choristerv1alpha1.ChoDatabase{
 				ObjectMeta: metav1.ObjectMeta{Name: "main-db", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoDatabaseSpec{
@@ -123,8 +121,6 @@ var _ = Describe("ChoDatabase Controller", func() {
 		})
 
 		It("should use 2+ instances for ha=true", func() {
-			Skip("awaiting Phase 4.2: ChoDatabase reconciler → SGCluster")
-
 			db := &choristerv1alpha1.ChoDatabase{
 				ObjectMeta: metav1.ObjectMeta{Name: "ha-db", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoDatabaseSpec{
@@ -150,8 +146,6 @@ var _ = Describe("ChoDatabase Controller", func() {
 		})
 
 		It("should use 1 instance for ha=false", func() {
-			Skip("awaiting Phase 4.2: ChoDatabase reconciler → SGCluster")
-
 			db := &choristerv1alpha1.ChoDatabase{
 				ObjectMeta: metav1.ObjectMeta{Name: "single-db", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoDatabaseSpec{

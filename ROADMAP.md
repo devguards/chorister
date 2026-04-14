@@ -305,19 +305,19 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 2: Core reconciliation — ChoApplication & namespace management
 
-- [ ] **2.1 — ChoApplication reconciler → namespace creation**
+- [x] **2.1 — ChoApplication reconciler → namespace creation**
   - Reconciler watches `ChoApplication`
   - For each domain in `.spec.domains`, ensure namespace `{app}-{domain}` exists
   - Apply standard labels: `chorister.dev/application`, `chorister.dev/domain`
   - Set owner references for cleanup
   - **Test:** create `ChoApplication` with 2 domains → assert 2 namespaces exist with correct labels. Delete application → namespaces deleted.
 
-- [ ] **2.2 — Default deny NetworkPolicy per namespace**
+- [x] **2.2 — Default deny NetworkPolicy per namespace**
   - When namespace is created, controller creates a deny-all ingress+egress NetworkPolicy
   - Allow DNS egress (kube-dns) so pods can resolve
   - **Test:** create application → assert NetworkPolicy exists in each domain namespace. Deploy a pod → confirm it cannot reach pods in other namespaces.
 
-- [ ] **2.3 — Resource quota and LimitRange from application policy**
+- [x] **2.3 — Resource quota and LimitRange from application policy**
   - Read `.spec.policy.quotas.defaultPerDomain`
   - Create ResourceQuota and LimitRange in each domain namespace
   - **Test:** create application with quota config → assert ResourceQuota exists → attempt to create pod exceeding quota → expect rejection
@@ -326,19 +326,19 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 3: Compute resource compilation
 
-- [ ] **3.1 — ChoCompute reconciler → Deployment + Service**
+- [x] **3.1 — ChoCompute reconciler → Deployment + Service**
   - Watch `ChoCompute` CRD
   - Compile to: kro RGD + instance that render Deployment (with resource requests/limits, liveness/readiness probes placeholder) and Service (ClusterIP)
   - Apply in target namespace
   - Update `.status` with ready replica count
   - **Test:** create `ChoCompute` → assert Deployment and Service exist → wait for pods Ready → check `.status.ready == true`
 
-- [ ] **3.2 — HPA and PDB for compute**
+- [x] **3.2 — HPA and PDB for compute**
   - If `replicas > 1`, create PodDisruptionBudget (minAvailable = replicas-1)
   - If `autoscaling` spec present, create HorizontalPodAutoscaler
   - **Test:** create ChoCompute with replicas=3 → assert PDB exists with minAvailable=2. Create with autoscaling → assert HPA exists.
 
-- [ ] **3.3 — Compute variants: Job and CronJob**
+- [x] **3.3 — Compute variants: Job and CronJob**
   - If `variant = "job"`, compile to K8s Job
   - If `variant = "cronjob"`, compile to CronJob with schedule
   - **Test:** create ChoCompute variant=job → assert Job runs to completion. Create variant=cronjob → assert CronJob is created with correct schedule.
@@ -347,18 +347,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 4: Database resource compilation (StackGres)
 
-- [ ] **4.1 — Install StackGres operator in test cluster**
+- [x] **4.1 — Install StackGres operator in test cluster**
   - Add StackGres install to `hack/setup-test-cluster.sh`
   - Verify SGCluster CRD is available
   - **Test:** `kubectl get crd sgclusters.stackgres.io` succeeds
 
-- [ ] **4.2 — ChoDatabase reconciler → SGCluster**
+- [x] **4.2 — ChoDatabase reconciler → SGCluster**
   - Watch `ChoDatabase` CRD
   - Compile to: kro RGD + instance that render SGCluster + SGPoolingConfig (PgBouncer) + SGBackupConfig
   - `ha: false` → 1 instance. `ha: true` → 2+ instances with Patroni
   - **Test:** create `ChoDatabase` with ha=false → assert SGCluster with 1 instance. Create with ha=true → assert 2+ instances. Wait for cluster ready.
 
-- [ ] **4.3 — Database secret wiring**
+- [x] **4.3 — Database secret wiring**
   - Controller creates a Secret with connection string, username, password
   - Secret name follows convention: `{domain}--database--{name}-credentials`
   - **Test:** create ChoDatabase → assert Secret exists with expected keys (host, port, username, password, uri)

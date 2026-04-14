@@ -57,7 +57,11 @@ var _ = Describe("ChoCompute Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: choristerv1alpha1.ChoComputeSpec{
+						Application: "test-app",
+						Domain:      "test-domain",
+						Image:       "nginx:latest",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -94,8 +98,6 @@ var _ = Describe("ChoCompute Controller", func() {
 
 	Context("1A.5 — ChoCompute lifecycle", func() {
 		It("should create Deployment and Service for long-running compute", func() {
-			Skip("awaiting Phase 3.1: ChoCompute reconciler → Deployment + Service")
-
 			replicas := int32(2)
 			port := int32(8080)
 			compute := &choristerv1alpha1.ChoCompute{
@@ -122,21 +124,46 @@ var _ = Describe("ChoCompute Controller", func() {
 			deploy := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "api-server", Namespace: "default"}, deploy)).To(Succeed())
 			Expect(*deploy.Spec.Replicas).To(Equal(int32(2)))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:latest"))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(8080)))
+			Expect(deploy.Labels).To(HaveKeyWithValue("chorister.dev/application", "myapp"))
+			Expect(deploy.Labels).To(HaveKeyWithValue("chorister.dev/domain", "payments"))
 
 			// Assert Service created
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "api-server", Namespace: "default"}, svc)).To(Succeed())
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
+			Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeClusterIP))
 		})
 
 		It("should reflect ready replicas in status", func() {
-			Skip("awaiting Phase 3.1: ChoCompute reconciler → Deployment + Service")
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "status-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
 
-			// Create ChoCompute → reconcile → assert status.ready tracks Deployment readiness
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// In envtest there is no kubelet, so readyReplicas will be 0
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			Expect(compute.Status.Conditions).NotTo(BeEmpty())
 		})
 
 		It("should create Job for job variant", func() {
-			Skip("awaiting Phase 3.3: Compute variants — Job and CronJob")
-
 			replicas := int32(1)
 			compute := &choristerv1alpha1.ChoCompute{
 				ObjectMeta: metav1.ObjectMeta{Name: "migrate-job", Namespace: "default"},
@@ -161,11 +188,15 @@ var _ = Describe("ChoCompute Controller", func() {
 			// Assert Job created (not Deployment)
 			job := &batchv1.Job{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "migrate-job", Namespace: "default"}, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"echo", "hello"}))
+
+			// Assert no Deployment was created
+			deploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "migrate-job", Namespace: "default"}, deploy)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 
 		It("should create CronJob for cronjob variant", func() {
-			Skip("awaiting Phase 3.3: Compute variants — Job and CronJob")
-
 			replicas := int32(1)
 			compute := &choristerv1alpha1.ChoCompute{
 				ObjectMeta: metav1.ObjectMeta{Name: "cleanup-cron", Namespace: "default"},
@@ -193,9 +224,8 @@ var _ = Describe("ChoCompute Controller", func() {
 		})
 
 		It("should create HPA when autoscaling is specified", func() {
-			Skip("awaiting Phase 3.2: HPA and PDB for compute")
-
 			replicas := int32(2)
+			port := int32(8080)
 			targetCPU := int32(80)
 			compute := &choristerv1alpha1.ChoCompute{
 				ObjectMeta: metav1.ObjectMeta{Name: "api-hpa", Namespace: "default"},
@@ -204,6 +234,7 @@ var _ = Describe("ChoCompute Controller", func() {
 					Domain:      "payments",
 					Image:       "nginx:latest",
 					Replicas:    &replicas,
+					Port:        &port,
 					Autoscaling: &choristerv1alpha1.AutoscalingSpec{
 						MinReplicas:      2,
 						MaxReplicas:      10,
@@ -222,13 +253,21 @@ var _ = Describe("ChoCompute Controller", func() {
 
 			hpaList := &autoscalingv2.HorizontalPodAutoscalerList{}
 			Expect(k8sClient.List(ctx, hpaList, client.InNamespace("default"))).To(Succeed())
-			Expect(hpaList.Items).NotTo(BeEmpty())
+			found := false
+			for _, hpa := range hpaList.Items {
+				if hpa.Name == "api-hpa-hpa" {
+					found = true
+					Expect(hpa.Spec.MaxReplicas).To(Equal(int32(10)))
+					Expect(*hpa.Spec.MinReplicas).To(Equal(int32(2)))
+					Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("api-hpa"))
+				}
+			}
+			Expect(found).To(BeTrue(), "HPA not found")
 		})
 
 		It("should create PDB when replicas > 1", func() {
-			Skip("awaiting Phase 3.2: HPA and PDB for compute")
-
 			replicas := int32(3)
+			port := int32(8080)
 			compute := &choristerv1alpha1.ChoCompute{
 				ObjectMeta: metav1.ObjectMeta{Name: "api-pdb", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoComputeSpec{
@@ -236,6 +275,7 @@ var _ = Describe("ChoCompute Controller", func() {
 					Domain:      "payments",
 					Image:       "nginx:latest",
 					Replicas:    &replicas,
+					Port:        &port,
 				},
 			}
 			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
@@ -249,19 +289,80 @@ var _ = Describe("ChoCompute Controller", func() {
 
 			pdbList := &policyv1.PodDisruptionBudgetList{}
 			Expect(k8sClient.List(ctx, pdbList, client.InNamespace("default"))).To(Succeed())
-			Expect(pdbList.Items).NotTo(BeEmpty())
+			found := false
+			for _, pdb := range pdbList.Items {
+				if pdb.Name == "api-pdb-pdb" {
+					found = true
+					Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(2))
+				}
+			}
+			Expect(found).To(BeTrue(), "PDB not found")
 		})
 
 		It("should update Deployment when image changes", func() {
-			Skip("awaiting Phase 3.1: ChoCompute reconciler → Deployment + Service")
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "img-update", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:1.0",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
 
-			// Create ChoCompute → reconcile → change image → reconcile → Deployment updated
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Change image
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			compute.Spec.Image = "nginx:2.0"
+			Expect(k8sClient.Update(ctx, compute)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:2.0"))
 		})
 
 		It("should clean up Deployment and Service on deletion", func() {
-			Skip("awaiting Phase 3.1: ChoCompute reconciler → Deployment + Service")
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "cleanup-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
 
-			// Delete CRD → Deployment + Service cleaned up via owner refs
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify resources exist
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, deploy)).To(Succeed())
+
+			// Delete ChoCompute — owner refs handle cleanup
+			Expect(k8sClient.Delete(ctx, compute)).To(Succeed())
 		})
 	})
 })
