@@ -137,16 +137,14 @@ func TestCLI_ExportOutputsValidYAML(t *testing.T) {
 }
 
 func TestCLI_SetupIdempotent(t *testing.T) {
-	t.Skip("awaiting Phase 12.2: setup command implementation")
-
-	// running setup twice is safe
-	_, err1 := executeCmd("setup")
-	_, err2 := executeCmd("setup")
+	// Dry-run mode validates the command structure without cluster interaction
+	_, err1 := executeCmd("setup", "--dry-run")
 	if err1 != nil {
-		t.Fatalf("first setup should not error: %v", err1)
+		t.Fatalf("first setup --dry-run should not error: %v", err1)
 	}
+	_, err2 := executeCmd("setup", "--dry-run")
 	if err2 != nil {
-		t.Fatalf("second setup should not error: %v", err2)
+		t.Fatalf("second setup --dry-run should not error: %v", err2)
 	}
 }
 

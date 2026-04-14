@@ -6,4 +6,16 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: chocluster-sample
 spec:
-  # TODO(user): Add fields here
+  operators:
+    kro: "latest"
+    stackgres: "latest"
+    nats: "latest"
+    dragonfly: "latest"
+    certManager: "latest"
+    gatekeeper: "latest"
+  observability:
+    monitoringNamespace: cho-monitoring
+    retention:
+      metrics: "30d"
+      logs: "14d"
+      traces: "7d"

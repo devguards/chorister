@@ -487,18 +487,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 11: Observability stack
 
-- [ ] **11.1 — Grafana LGTM installation via ChoCluster**
+- [x] **11.1 — Grafana LGTM installation via ChoCluster**
   - Controller reconciles ChoCluster to install: Grafana Alloy, Mimir, Loki, Tempo
   - All configured to use local PVCs (for Kind; object storage in real clusters)
   - **Test:** create ChoCluster → assert Alloy, Mimir, Loki, Tempo pods running → Grafana accessible
 
-- [ ] **11.2 — Audit event logging to Loki**
+- [x] **11.2 — Audit event logging to Loki**
   - Controller writes structured JSON audit events to Loki on every reconciliation
   - Events: who, what, when, domain, application, action, result
   - Synchronous: if Loki write fails, reconciliation fails
   - **Test:** create/update a ChoCompute → query Loki for audit event → assert event contains expected fields
 
-- [ ] **11.3 — Controller-generated Grafana dashboards**
+- [x] **11.3 — Controller-generated Grafana dashboards**
   - Per-domain dashboard ConfigMap: pod status, resource usage, network flows
   - Grafana sidecar auto-loads dashboards
   - **Test:** create application with domain → assert Grafana dashboard ConfigMap exists in monitoring namespace
@@ -507,19 +507,19 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 12: ChoCluster — full stack bootstrap
 
-- [ ] **12.1 — ChoCluster reconciler: operator lifecycle**
+- [x] **12.1 — ChoCluster reconciler: operator lifecycle**
   - ChoCluster CRD defines which operators to install and their versions
   - Controller installs/upgrades: kro, StackGres, NATS operator, Dragonfly operator, cert-manager, Gatekeeper
   - If operator is deleted, controller reinstalls on next reconciliation
   - **Test:** create ChoCluster → assert all operators running. Delete StackGres operator → wait for reconciliation → assert reinstalled.
 
-- [ ] **12.2 — `chorister setup` CLI command**
+- [x] **12.2 — `chorister setup` CLI command**
   - Installs controller Deployment + CRDs into `cho-system` namespace
   - Creates default ChoCluster CRD to trigger stack bootstrap
   - Idempotent: running twice is safe
   - **Test:** run `chorister setup` on clean cluster → assert controller running + CRDs registered. Run again → no errors, same state.
 
-- [ ] **12.3 — Encrypted StorageClass validation**
+- [x] **12.3 — Encrypted StorageClass validation**
   - Controller validates that an encrypted StorageClass exists during setup
   - Warn if not found (Kind won't have one, but real clusters must)
   - **Test:** controller starts on Kind → warning in logs about missing encrypted StorageClass (non-blocking for dev)

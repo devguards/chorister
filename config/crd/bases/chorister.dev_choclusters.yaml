@@ -83,6 +83,50 @@ spec:
                         x-kubernetes-int-or-string: true
                     type: object
                 type: object
+              observability:
+                description: observability defines the observability stack configuration.
+                properties:
+                  enabled:
+                    description: enabled controls whether the observability stack
+                      is deployed. Defaults to true.
+                    type: boolean
+                  monitoringNamespace:
+                    default: cho-monitoring
+                    description: monitoringNamespace is the namespace where observability
+                      components are deployed.
+                    type: string
+                  retention:
+                    description: retention defines data retention policies.
+                    properties:
+                      logs:
+                        description: logs retention period (e.g. "14d"). Defaults
+                          to 14d.
+                        type: string
+                      metrics:
+                        description: metrics retention period (e.g. "30d"). Defaults
+                          to 30d.
+                        type: string
+                      traces:
+                        description: traces retention period (e.g. "7d"). Defaults
+                          to 7d.
+                        type: string
+                    type: object
+                  versions:
+                    description: versions specifies component versions for the observability
+                      stack.
+                    properties:
+                      alloy:
+                        type: string
+                      grafana:
+                        type: string
+                      loki:
+                        type: string
+                      mimir:
+                        type: string
+                      tempo:
+                        type: string
+                    type: object
+                type: object
               operators:
                 description: operators defines the operators to install and their
                   versions.
@@ -206,6 +250,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observabilityReady:
+                description: observabilityReady indicates whether the monitoring stack
+                  is operational.
+                type: boolean
               operatorStatus:
                 additionalProperties:
                   type: string

@@ -18,40 +18,544 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/audit"
 )
 
-// ChoClusterReconciler reconciles a ChoCluster object
+const (
+	clusterLabelManagedBy = "chorister.dev/managed-by"
+	clusterLabelComponent = "chorister.dev/component"
+)
+
+// ChoClusterReconciler reconciles a ChoCluster object.
 type ChoClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme      *runtime.Scheme
+	AuditLogger audit.Logger
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=choclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=choclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the ChoCluster object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
+// Reconcile moves the cluster state to match the desired ChoCluster spec.
 func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	cluster := &choristerv1alpha1.ChoCluster{}
+	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
+	// Audit: log the reconciliation start (fail-fast if audit sink fails)
+	if r.AuditLogger != nil {
+		if err := r.AuditLogger.Log(ctx, audit.Event{
+			Timestamp: time.Now(),
+			Action:    "Reconcile",
+			Resource:  "ChoCluster/" + cluster.Name,
+			Result:    "started",
+		}); err != nil {
+			log.Error(err, "Audit write failed, blocking reconciliation")
+			setCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type:    "AuditReady",
+				Status:  metav1.ConditionFalse,
+				Reason:  "AuditWriteFailed",
+				Message: fmt.Sprintf("Audit sink write failed: %v", err),
+			})
+			_ = r.Status().Update(ctx, cluster)
+			return ctrl.Result{}, fmt.Errorf("audit write failed, blocking reconciliation: %w", err)
+		}
+	}
+
+	// Initialize status maps
+	if cluster.Status.OperatorStatus == nil {
+		cluster.Status.OperatorStatus = make(map[string]string)
+	}
+
+	// Phase 12.1: Reconcile operators
+	if cluster.Spec.Operators != nil {
+		if err := r.reconcileOperators(ctx, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Phase 11.1: Reconcile observability stack
+	if err := r.reconcileObservability(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Phase 12.3: Validate StorageClass for encryption
+	r.validateStorageClass(ctx, cluster)
+
+	// Phase 11.3: Reconcile Grafana dashboards
+	if err := r.reconcileGrafanaDashboards(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update status
+	cluster.Status.Phase = "Ready"
+	setCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "Reconciled",
+		Message: "ChoCluster reconciliation completed",
+	})
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Reconciliation completed", "cluster", cluster.Name)
 	return ctrl.Result{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12.1: Operator lifecycle
+// ---------------------------------------------------------------------------
+
+type operatorDef struct {
+	name      string
+	namespace string
+	image     string
+}
+
+func operatorDefs(ops *choristerv1alpha1.OperatorVersions) []operatorDef {
+	var defs []operatorDef
+	if ops.Kro != "" {
+		defs = append(defs, operatorDef{"kro", "cho-kro-system", "ghcr.io/awslabs/kro:" + ops.Kro})
+	}
+	if ops.StackGres != "" {
+		defs = append(defs, operatorDef{"stackgres", "cho-stackgres-system", "stackgres/operator:" + ops.StackGres})
+	}
+	if ops.NATS != "" {
+		defs = append(defs, operatorDef{"nats", "cho-nats-system", "natsio/nats-server:" + ops.NATS})
+	}
+	if ops.Dragonfly != "" {
+		defs = append(defs, operatorDef{"dragonfly", "cho-dragonfly-system", "docker.dragonflydb.io/dragonflydb/operator:" + ops.Dragonfly})
+	}
+	if ops.CertManager != "" {
+		defs = append(defs, operatorDef{"cert-manager", "cho-cert-manager-system", "quay.io/jetstack/cert-manager-controller:" + ops.CertManager})
+	}
+	if ops.Gatekeeper != "" {
+		defs = append(defs, operatorDef{"gatekeeper", "cho-gatekeeper-system", "openpolicyagent/gatekeeper:" + ops.Gatekeeper})
+	}
+	return defs
+}
+
+func (r *ChoClusterReconciler) reconcileOperators(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	log := logf.FromContext(ctx)
+
+	for _, def := range operatorDefs(cluster.Spec.Operators) {
+		if err := r.ensureClusterNamespace(ctx, def.namespace, map[string]string{
+			clusterLabelManagedBy: "chocluster",
+			clusterLabelComponent: "operator-" + def.name,
+		}); err != nil {
+			return err
+		}
+
+		if err := r.ensureOperatorDeployment(ctx, def); err != nil {
+			return err
+		}
+
+		cluster.Status.OperatorStatus[def.name] = "Installed"
+		log.Info("Operator reconciled", "operator", def.name)
+	}
+
+	return nil
+}
+
+func (r *ChoClusterReconciler) ensureOperatorDeployment(ctx context.Context, def operatorDef) error {
+	deployName := def.name + "-operator"
+	replicas := int32(1)
+
+	deploy := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: deployName, Namespace: def.namespace}, deploy)
+	if errors.IsNotFound(err) {
+		deploy = &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deployName,
+				Namespace: def.namespace,
+				Labels: map[string]string{
+					clusterLabelManagedBy: "chocluster",
+					clusterLabelComponent: "operator-" + def.name,
+					"app":                 def.name,
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": def.name},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": def.name},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  def.name,
+								Image: def.image,
+								Resources: corev1.ResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceCPU:    resource.MustParse("100m"),
+										corev1.ResourceMemory: resource.MustParse("128Mi"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return r.Create(ctx, deploy)
+	}
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11.1: Observability stack (Grafana LGTM)
+// ---------------------------------------------------------------------------
+
+type resolvedVersions struct {
+	Alloy, Mimir, Loki, Tempo, Grafana string
+}
+
+func defaultVersions() resolvedVersions {
+	return resolvedVersions{
+		Alloy:   "latest",
+		Mimir:   "latest",
+		Loki:    "latest",
+		Tempo:   "latest",
+		Grafana: "latest",
+	}
+}
+
+func monitoringNamespace(cluster *choristerv1alpha1.ChoCluster) string {
+	if cluster.Spec.Observability != nil && cluster.Spec.Observability.MonitoringNamespace != "" {
+		return cluster.Spec.Observability.MonitoringNamespace
+	}
+	return "cho-monitoring"
+}
+
+func (r *ChoClusterReconciler) reconcileObservability(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	// Skip if explicitly disabled
+	if cluster.Spec.Observability != nil && cluster.Spec.Observability.Enabled != nil && !*cluster.Spec.Observability.Enabled {
+		cluster.Status.ObservabilityReady = false
+		return nil
+	}
+
+	monNs := monitoringNamespace(cluster)
+
+	if err := r.ensureClusterNamespace(ctx, monNs, map[string]string{
+		clusterLabelManagedBy: "chocluster",
+		clusterLabelComponent: "monitoring",
+	}); err != nil {
+		return err
+	}
+
+	versions := defaultVersions()
+	if cluster.Spec.Observability != nil && cluster.Spec.Observability.Versions != nil {
+		v := cluster.Spec.Observability.Versions
+		if v.Alloy != "" {
+			versions.Alloy = v.Alloy
+		}
+		if v.Mimir != "" {
+			versions.Mimir = v.Mimir
+		}
+		if v.Loki != "" {
+			versions.Loki = v.Loki
+		}
+		if v.Tempo != "" {
+			versions.Tempo = v.Tempo
+		}
+		if v.Grafana != "" {
+			versions.Grafana = v.Grafana
+		}
+	}
+
+	components := []struct {
+		name  string
+		image string
+		port  int32
+	}{
+		{"loki", "grafana/loki:" + versions.Loki, 3100},
+		{"mimir", "grafana/mimir:" + versions.Mimir, 9009},
+		{"tempo", "grafana/tempo:" + versions.Tempo, 3200},
+		{"alloy", "grafana/alloy:" + versions.Alloy, 12345},
+		{"grafana", "grafana/grafana:" + versions.Grafana, 3000},
+	}
+
+	for _, comp := range components {
+		if err := r.ensureComponentDeployment(ctx, monNs, comp.name, comp.image, comp.port); err != nil {
+			return err
+		}
+		if err := r.ensureComponentService(ctx, monNs, comp.name, comp.port); err != nil {
+			return err
+		}
+	}
+
+	cluster.Status.ObservabilityReady = true
+	return nil
+}
+
+func (r *ChoClusterReconciler) ensureComponentDeployment(ctx context.Context, namespace, name, image string, port int32) error {
+	replicas := int32(1)
+
+	deploy := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deploy)
+	if errors.IsNotFound(err) {
+		deploy = &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					clusterLabelManagedBy: "chocluster",
+					clusterLabelComponent: name,
+					"app":                 name,
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": name},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": name},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  name,
+								Image: image,
+								Ports: []corev1.ContainerPort{
+									{ContainerPort: port, Protocol: corev1.ProtocolTCP},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return r.Create(ctx, deploy)
+	}
+	if err != nil {
+		return err
+	}
+	// Update image if changed
+	if len(deploy.Spec.Template.Spec.Containers) > 0 && deploy.Spec.Template.Spec.Containers[0].Image != image {
+		deploy.Spec.Template.Spec.Containers[0].Image = image
+		return r.Update(ctx, deploy)
+	}
+	return nil
+}
+
+func (r *ChoClusterReconciler) ensureComponentService(ctx context.Context, namespace, name string, port int32) error {
+	svc := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, svc)
+	if errors.IsNotFound(err) {
+		svc = &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					clusterLabelManagedBy: "chocluster",
+					clusterLabelComponent: name,
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Selector: map[string]string{"app": name},
+				Ports: []corev1.ServicePort{
+					{Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP},
+				},
+			},
+		}
+		return r.Create(ctx, svc)
+	}
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12.3: StorageClass validation
+// ---------------------------------------------------------------------------
+
+func (r *ChoClusterReconciler) validateStorageClass(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) {
+	log := logf.FromContext(ctx)
+
+	scList := &storagev1.StorageClassList{}
+	if err := r.List(ctx, scList); err != nil {
+		log.Info("Could not list StorageClasses for encryption validation", "error", err)
+		setCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:    "EncryptedStorageAvailable",
+			Status:  metav1.ConditionUnknown,
+			Reason:  "ListFailed",
+			Message: "Could not list StorageClasses",
+		})
+		return
+	}
+
+	for _, sc := range scList.Items {
+		if isEncryptedStorageClass(sc) {
+			setCondition(&cluster.Status.Conditions, metav1.Condition{
+				Type:    "EncryptedStorageAvailable",
+				Status:  metav1.ConditionTrue,
+				Reason:  "Found",
+				Message: fmt.Sprintf("Encrypted StorageClass found: %s", sc.Name),
+			})
+			return
+		}
+	}
+
+	log.Info("No encrypted StorageClass found; recommended for production use")
+	setCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:    "EncryptedStorageAvailable",
+		Status:  metav1.ConditionFalse,
+		Reason:  "NotFound",
+		Message: "No encrypted StorageClass found. Recommended for production use.",
+	})
+}
+
+func isEncryptedStorageClass(sc storagev1.StorageClass) bool {
+	if v, ok := sc.Annotations["storageclass.kubernetes.io/is-encrypted"]; ok && v == "true" {
+		return true
+	}
+	if sc.Parameters != nil {
+		if _, ok := sc.Parameters["encrypted"]; ok {
+			return true
+		}
+		if _, ok := sc.Parameters["csi.storage.k8s.io/node-stage-secret-name"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11.3: Grafana dashboards
+// ---------------------------------------------------------------------------
+
+func (r *ChoClusterReconciler) reconcileGrafanaDashboards(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	if cluster.Spec.Observability != nil && cluster.Spec.Observability.Enabled != nil && !*cluster.Spec.Observability.Enabled {
+		return nil
+	}
+
+	monNs := monitoringNamespace(cluster)
+
+	appList := &choristerv1alpha1.ChoApplicationList{}
+	if err := r.List(ctx, appList); err != nil {
+		return fmt.Errorf("list ChoApplications for dashboards: %w", err)
+	}
+
+	for i := range appList.Items {
+		app := &appList.Items[i]
+		for _, domain := range app.Spec.Domains {
+			dashboardName := fmt.Sprintf("dashboard-%s-%s", app.Name, domain.Name)
+			dashboardJSON := generateDashboardJSON(app.Name, domain.Name)
+
+			cm := &corev1.ConfigMap{}
+			err := r.Get(ctx, types.NamespacedName{Name: dashboardName, Namespace: monNs}, cm)
+			if errors.IsNotFound(err) {
+				cm = &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      dashboardName,
+						Namespace: monNs,
+						Labels: map[string]string{
+							clusterLabelManagedBy: "chocluster",
+							"grafana_dashboard":   "1",
+						},
+					},
+					Data: map[string]string{
+						dashboardName + ".json": dashboardJSON,
+					},
+				}
+				if err := r.Create(ctx, cm); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func generateDashboardJSON(appName, domainName string) string {
+	dashboard := map[string]interface{}{
+		"editable":      true,
+		"schemaVersion": 39,
+		"tags":          []string{"chorister", appName, domainName},
+		"title":         fmt.Sprintf("%s / %s", appName, domainName),
+		"uid":           fmt.Sprintf("cho-%s-%s", appName, domainName),
+		"version":       1,
+		"time":          map[string]string{"from": "now-6h", "to": "now"},
+		"panels": []map[string]interface{}{
+			{
+				"title":       "Pod Status",
+				"type":        "stat",
+				"datasource":  map[string]string{"type": "prometheus", "uid": "mimir"},
+				"description": fmt.Sprintf("Pod status for %s/%s", appName, domainName),
+			},
+			{
+				"title":       "Resource Usage",
+				"type":        "timeseries",
+				"datasource":  map[string]string{"type": "prometheus", "uid": "mimir"},
+				"description": fmt.Sprintf("Resource usage for %s/%s", appName, domainName),
+			},
+			{
+				"title":       "Network Flows",
+				"type":        "timeseries",
+				"datasource":  map[string]string{"type": "prometheus", "uid": "mimir"},
+				"description": fmt.Sprintf("Network flows for %s/%s", appName, domainName),
+			},
+		},
+	}
+	b, _ := json.MarshalIndent(dashboard, "", "  ")
+	return string(b)
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+func (r *ChoClusterReconciler) ensureClusterNamespace(ctx context.Context, name string, labels map[string]string) error {
+	ns := &corev1.Namespace{}
+	err := r.Get(ctx, types.NamespacedName{Name: name}, ns)
+	if errors.IsNotFound(err) {
+		ns = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   name,
+				Labels: labels,
+			},
+		}
+		return r.Create(ctx, ns)
+	}
+	return err
 }
 
 // SetupWithManager sets up the controller with the Manager.

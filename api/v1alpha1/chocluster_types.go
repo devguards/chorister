@@ -38,6 +38,10 @@ type ChoClusterSpec struct {
 	// controllerRevision is the current stable controller revision name.
 	// +optional
 	ControllerRevision string `json:"controllerRevision,omitempty"`
+
+	// observability defines the observability stack configuration.
+	// +optional
+	Observability *ObservabilitySpec `json:"observability,omitempty"`
 }
 
 // OperatorVersions defines desired versions for managed operators.
@@ -94,6 +98,53 @@ type CostRates struct {
 	StoragePerGBMonth *resource.Quantity `json:"storagePerGBMonth,omitempty"`
 }
 
+// ObservabilitySpec configures the cluster-wide observability stack (Grafana LGTM).
+type ObservabilitySpec struct {
+	// enabled controls whether the observability stack is deployed. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// monitoringNamespace is the namespace where observability components are deployed.
+	// +kubebuilder:default="cho-monitoring"
+	// +optional
+	MonitoringNamespace string `json:"monitoringNamespace,omitempty"`
+
+	// versions specifies component versions for the observability stack.
+	// +optional
+	Versions *ObservabilityVersions `json:"versions,omitempty"`
+
+	// retention defines data retention policies.
+	// +optional
+	Retention *RetentionSpec `json:"retention,omitempty"`
+}
+
+// ObservabilityVersions specifies the version of each observability component.
+type ObservabilityVersions struct {
+	// +optional
+	Alloy string `json:"alloy,omitempty"`
+	// +optional
+	Mimir string `json:"mimir,omitempty"`
+	// +optional
+	Loki string `json:"loki,omitempty"`
+	// +optional
+	Tempo string `json:"tempo,omitempty"`
+	// +optional
+	Grafana string `json:"grafana,omitempty"`
+}
+
+// RetentionSpec defines retention periods for observability data.
+type RetentionSpec struct {
+	// metrics retention period (e.g. "30d"). Defaults to 30d.
+	// +optional
+	Metrics string `json:"metrics,omitempty"`
+	// logs retention period (e.g. "14d"). Defaults to 14d.
+	// +optional
+	Logs string `json:"logs,omitempty"`
+	// traces retention period (e.g. "7d"). Defaults to 7d.
+	// +optional
+	Traces string `json:"traces,omitempty"`
+}
+
 // ChoClusterStatus defines the observed state of ChoCluster.
 type ChoClusterStatus struct {
 	// conditions represent the current state of the ChoCluster.
@@ -113,6 +164,10 @@ type ChoClusterStatus struct {
 	// cisBenchmark stores the latest kube-bench results.
 	// +optional
 	CISBenchmark string `json:"cisBenchmark,omitempty"`
+
+	// observabilityReady indicates whether the monitoring stack is operational.
+	// +optional
+	ObservabilityReady bool `json:"observabilityReady,omitempty"`
 }
 
 // +kubebuilder:object:root=true

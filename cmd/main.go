@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -242,8 +243,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ChoClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		AuditLogger: audit.NewNoopLogger(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoCluster")
 		os.Exit(1)

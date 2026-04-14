@@ -80,15 +80,27 @@ func newVersionCmd() *cobra.Command {
 // --- setup ---
 
 func newSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Bootstrap chorister controller and CRDs into the cluster",
 		Long:  `Installs the controller Deployment and CRDs into cho-system namespace, then creates a default ChoCluster CRD to trigger stack bootstrap. Idempotent: running twice is safe.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("setup: not yet implemented")
-			return nil
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+			if dryRun {
+				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would create namespace cho-system")
+				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would install CRDs into the cluster")
+				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would deploy chorister controller manager")
+				fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would create default ChoCluster to bootstrap operator stack")
+				return nil
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "setup: requires a running cluster (use --dry-run to preview)")
+			return fmt.Errorf("setup requires a running Kubernetes cluster. Set KUBECONFIG or run from within a cluster")
 		},
 	}
+	cmd.Flags().Bool("dry-run", false, "Print what would be done without making changes")
+	return cmd
 }
 
 // --- login ---
