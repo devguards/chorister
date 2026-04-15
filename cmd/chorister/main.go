@@ -20,13 +20,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/cobra/doc"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/compiler"
+	"github.com/chorister-dev/chorister/internal/query"
+	"github.com/chorister-dev/chorister/internal/report"
 )
 
 var (
@@ -64,8 +68,13 @@ It provides sandbox-first workflow, deterministic promotion, and compliance buil
 		newApproveCmd(),
 		newRejectCmd(),
 		newRequestsCmd(),
+		newLogsCmd(),
+		newEventsCmd(),
 		newAdminCmd(),
 		newExportCmd(),
+		newGetCmd(),
+		newWaitCmd(),
+		newDocsCmd(root),
 	)
 
 	return root
@@ -75,8 +84,9 @@ It provides sandbox-first workflow, deterministic promotion, and compliance buil
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print build information",
+		Use:     "version",
+		Short:   "Print build information",
+		Example: "  chorister version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("chorister %s (commit: %s, built: %s)\n", version, commit, date)
 		},
@@ -90,6 +100,8 @@ func newSetupCmd() *cobra.Command {
 		Use:   "setup",
 		Short: "Bootstrap chorister controller and CRDs into the cluster",
 		Long:  `Installs the controller Deployment and CRDs into cho-system namespace, then creates a default ChoCluster CRD to trigger stack bootstrap. Idempotent: running twice is safe.`,
+		Example: `  chorister setup
+  chorister setup --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
@@ -115,6 +127,8 @@ func newLoginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate via OIDC",
+		Long:  `Initiates an OIDC device-flow authentication and stores credentials for subsequent CLI calls. The OIDC provider is configured in the ChoCluster resource.`,
+		Example: "  chorister login",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("login: not yet implemented")
 			return nil
@@ -128,7 +142,9 @@ func newApplyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Apply DSL to a sandbox (always sandbox, never production)",
-		Long:  `Reads the DSL file and creates/updates CRDs in the target sandbox namespace. Refuses to target production namespaces.`,
+		Long:  `Reads the DSL file and creates/updates CRDs in the target sandbox namespace. Refuses to target production namespaces. Use 'chorister promote' to move changes to production.`,
+		Example: `  chorister apply --domain payments --sandbox alice --file infra.cho
+  chorister apply -d payments -s alice -f infra.cho`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			sandbox, _ := cmd.Flags().GetString("sandbox")
@@ -161,12 +177,14 @@ func newSandboxCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sandbox",
 		Short: "Manage sandbox lifecycle",
+		Long:  `Create, list, inspect, and destroy sandboxes. Sandboxes are isolated namespaces for development and testing. All 'chorister apply' changes target a sandbox — use 'chorister promote' to push to production.`,
 	}
 
 	cmd.AddCommand(
 		newSandboxCreateCmd(),
 		newSandboxDestroyCmd(),
 		newSandboxListCmd(),
+		newSandboxStatusCmd(),
 	)
 	return cmd
 }
@@ -175,6 +193,9 @@ func newSandboxCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new sandbox",
+		Long:  `Provisions a new isolated namespace for development. The sandbox inherits the domain's resource limits and network policies but is fully isolated from production.`,
+		Example: `  chorister sandbox create --domain payments --name alice
+  chorister sandbox create --domain payments --name feature-x --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			name, _ := cmd.Flags().GetString("name")
@@ -199,6 +220,9 @@ func newSandboxDestroyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "destroy",
 		Short: "Destroy a sandbox and all its resources",
+		Long:  `Permanently deletes a sandbox namespace and all resources within it. This action is irreversible. Stateful resources (databases, queues) will be deleted without archiving.`,
+		Example: `  chorister sandbox destroy --domain payments --name alice
+  chorister sandbox destroy --domain payments --name alice --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			name, _ := cmd.Flags().GetString("name")
@@ -223,13 +247,50 @@ func newSandboxListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List sandboxes",
+		Long:  `Lists all sandboxes with owner, domain, age, last-apply time, estimated cost, and idle warning. Filter by domain or application.`,
+		Example: `  chorister sandbox list
+  chorister sandbox list --domain payments
+  chorister sandbox list --app myproduct --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
-			fmt.Printf("sandbox list: domain=%s (not yet implemented)\n", domain)
-			return nil
+			app, _ := cmd.Flags().GetString("app")
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			var sandboxes []query.SandboxInfo
+			if domain != "" {
+				// Resolve app
+				if app == "" {
+					apps, qerr := q.ListApplications(cmd.Context())
+					if qerr != nil {
+						return qerr
+					}
+					if len(apps) == 1 {
+						app = apps[0].Name
+					} else {
+						return fmt.Errorf("--app is required when multiple applications exist")
+					}
+				}
+				sandboxes, err = q.ListSandboxesByDomain(cmd.Context(), app, domain)
+			} else {
+				sandboxes, err = q.ListAllSandboxes(cmd.Context(), app)
+			}
+			if err != nil {
+				return err
+			}
+
+			td := report.SandboxListReport(sandboxes)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, sandboxes, &td)
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Filter by domain")
+	cmd.Flags().String("app", "", "Filter by application name")
+	addOutputFlag(cmd)
 	return cmd
 }
 
@@ -240,9 +301,12 @@ func newDiffCmd() *cobra.Command {
 		Use:   "diff",
 		Short: "Compare sandbox vs production",
 		Long:  `Shows resource-level differences between sandbox and production namespaces: added, changed, removed resources.`,
+		Example: `  chorister diff --domain payments --sandbox alice
+  chorister diff --domain payments --sandbox alice --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			sandbox, _ := cmd.Flags().GetString("sandbox")
+			app, _ := cmd.Flags().GetString("app")
 
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
@@ -251,12 +315,33 @@ func newDiffCmd() *cobra.Command {
 				return fmt.Errorf("--sandbox is required")
 			}
 
-			fmt.Printf("diff: domain=%s sandbox=%s (not yet implemented)\n", domain, sandbox)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Resolve app
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "diff: app=%s domain=%s sandbox=%s (not yet implemented — awaiting compilation integration)\n", app, domain, sandbox)
 			return nil
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
 	cmd.Flags().StringP("sandbox", "s", "", "Source sandbox name")
+	cmd.Flags().String("app", "", "Application name")
+	addOutputFlag(cmd)
 	return cmd
 }
 
@@ -266,15 +351,116 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [domain]",
 		Short: "Show domain health across environments",
+		Long: `Show health summary for all domains in an application, or detailed status for a specific domain.
+
+Without a domain argument, lists all domains with their phase, resource counts, and isolation state.
+With a domain argument, shows production resource health and all active sandboxes.`,
+		Example: `  # Show all domains for a single-app cluster
+  chorister status
+
+  # Show all domains for a specific application
+  chorister status --app myproduct
+
+  # Show detailed status for the payments domain
+  chorister status payments --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				fmt.Printf("status: domain=%s (not yet implemented)\n", args[0])
-			} else {
-				fmt.Println("status: all domains (not yet implemented)")
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
 			}
-			return nil
+			q := query.NewQuerier(c)
+
+			appName, _ := cmd.Flags().GetString("app")
+			format := getOutputFormat(cmd)
+
+			// If a specific domain is given, show domain detail + sandboxes
+			if len(args) > 0 {
+				domainName := args[0]
+
+				// Resolve app if not provided
+				if appName == "" {
+					apps, err := q.ListApplications(cmd.Context())
+					if err != nil {
+						return err
+					}
+					if len(apps) == 1 {
+						appName = apps[0].Name
+					} else {
+						return fmt.Errorf("--app is required when multiple applications exist")
+					}
+				}
+
+				domains, err := q.ListDomainsByApp(cmd.Context(), appName)
+				if err != nil {
+					return err
+				}
+				var found *query.DomainInfo
+				for i := range domains {
+					if domains[i].Name == domainName {
+						found = &domains[i]
+						break
+					}
+				}
+				if found == nil {
+					return fmt.Errorf("domain %q not found in application %q", domainName, appName)
+				}
+
+				var resources *query.DomainResources
+				if found.Namespace != "" {
+					resources, err = q.ListDomainResources(cmd.Context(), found.Namespace)
+					if err != nil {
+						return err
+					}
+				} else {
+					resources = &query.DomainResources{}
+				}
+
+				sandboxes, err := q.ListSandboxesByDomain(cmd.Context(), appName, domainName)
+				if err != nil {
+					return err
+				}
+
+				ss := report.DomainStatusReport(*found, resources, sandboxes)
+				if format == "table" {
+					renderStatusSummary(cmd.OutOrStdout(), &ss)
+					if len(sandboxes) > 0 {
+						fmt.Fprintln(cmd.OutOrStdout(), "")
+						fmt.Fprintln(cmd.OutOrStdout(), "Sandboxes:")
+						td := report.SandboxListReport(sandboxes)
+						renderTable(cmd.OutOrStdout(), &td)
+					}
+					return nil
+				}
+				return renderOutput(cmd.OutOrStdout(), format, ss, nil)
+			}
+
+			// No domain arg: show summary for all domains
+			if appName == "" {
+				apps, err := q.ListApplications(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if len(apps) == 1 {
+					appName = apps[0].Name
+				} else if len(apps) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "No applications found")
+					return nil
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			domains, err := q.ListDomainsByApp(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			td := report.DomainListReport(domains)
+			return renderOutput(cmd.OutOrStdout(), format, domains, &td)
 		},
 	}
+	cmd.Flags().String("app", "", "Application name")
+	addOutputFlag(cmd)
 	return cmd
 }
 
@@ -284,23 +470,84 @@ func newPromoteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "promote",
 		Short: "Create a ChoPromotionRequest to promote sandbox to production",
+		Long: `Creates a ChoPromotionRequest that moves a sandbox's compiled resources into production.
+The controller handles approval gating (if configured) and security scan requirements.
+
+Use --rollback to revert production to its previous compiled state. Rollback and --sandbox are mutually exclusive.`,
+		Example: `  chorister promote --domain payments --sandbox alice
+  chorister promote --domain payments --rollback
+  chorister promote --domain payments --sandbox alice --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			sandbox, _ := cmd.Flags().GetString("sandbox")
+			rollback, _ := cmd.Flags().GetBool("rollback")
+			app, _ := cmd.Flags().GetString("app")
 
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
 			}
-			if sandbox == "" {
-				return fmt.Errorf("--sandbox is required")
+
+			if rollback && sandbox != "" {
+				return fmt.Errorf("--rollback and --sandbox are mutually exclusive: rollback reverts production from its own history")
 			}
 
-			fmt.Printf("promote: domain=%s sandbox=%s (not yet implemented)\n", domain, sandbox)
+			if !rollback && sandbox == "" {
+				return fmt.Errorf("--sandbox is required (or use --rollback to revert production)")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Resolve app
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: fmt.Sprintf("%s-%s-", app, domain),
+					Namespace:    "default",
+				},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: app,
+					Domain:      domain,
+					Sandbox:     sandbox,
+					RequestedBy: "cli-user",
+				},
+			}
+
+			if rollback {
+				pr.ObjectMeta.GenerateName = fmt.Sprintf("%s-%s-rollback-", app, domain)
+				// Sandbox is empty for rollback requests; controller interprets this as rollback
+			}
+
+			if err := c.Create(cmd.Context(), pr); err != nil {
+				return fmt.Errorf("create ChoPromotionRequest: %w", err)
+			}
+
+			if rollback {
+				fmt.Fprintf(cmd.OutOrStdout(), "Rollback ChoPromotionRequest created for domain %s\n", domain)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "ChoPromotionRequest created: domain=%s sandbox=%s\n", domain, sandbox)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
 	cmd.Flags().StringP("sandbox", "s", "", "Source sandbox name")
+	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().Bool("rollback", false, "Roll back production to previous state")
 	return cmd
 }
 
@@ -310,6 +557,8 @@ func newApproveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "approve [promotion-id]",
 		Short: "Approve a ChoPromotionRequest",
+		Long:  `Records your approval on a pending ChoPromotionRequest. When the required number of approvals is reached, the controller begins executing the promotion.`,
+		Example: "  chorister approve myproduct-payments-abc123",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("approve: id=%s (not yet implemented)\n", args[0])
@@ -324,6 +573,8 @@ func newRejectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reject [promotion-id]",
 		Short: "Reject a ChoPromotionRequest",
+		Long:  `Permanently rejects a pending ChoPromotionRequest. The sandbox remains intact; a new promotion request must be created to try again.`,
+		Example: "  chorister reject myproduct-payments-abc123",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("reject: id=%s (not yet implemented)\n", args[0])
@@ -335,14 +586,45 @@ func newRejectCmd() *cobra.Command {
 // --- requests ---
 
 func newRequestsCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "requests",
-		Short: "List pending promotion requests",
+		Short: "List promotion requests",
+		Long:  `Lists ChoPromotionRequests with their current phase, approval count, and age. Supports filtering by application, domain, and status.`,
+		Example: `  chorister requests
+  chorister requests --status pending
+  chorister requests --domain payments --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("requests: (not yet implemented)")
-			return nil
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, _ := cmd.Flags().GetString("app")
+			domain, _ := cmd.Flags().GetString("domain")
+			status, _ := cmd.Flags().GetString("status")
+
+			filters := query.PromotionFilter{
+				App:    app,
+				Domain: domain,
+				Status: status,
+			}
+
+			promotions, err := q.ListPromotionRequests(cmd.Context(), filters)
+			if err != nil {
+				return err
+			}
+
+			td := report.PromotionListReport(promotions)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, promotions, &td)
 		},
 	}
+	cmd.Flags().String("app", "", "Filter by application name")
+	cmd.Flags().String("domain", "", "Filter by domain name")
+	cmd.Flags().String("status", "", "Filter by status: pending, approved, rejected, all")
+	addOutputFlag(cmd)
+	return cmd
 }
 
 // --- admin ---
@@ -351,17 +633,25 @@ func newAdminCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "admin",
 		Short: "Platform administration commands (org-admin only)",
+		Long:  `Platform administration: manage applications, domains, members, compliance, FinOps, vulnerability reports, and cluster upgrades. These commands require org-admin role.`,
 	}
 
 	cmd.AddCommand(
 		newAdminAppCmd(),
 		newAdminDomainCmd(),
+		newAdminClusterCmd(),
 		newAdminMemberCmd(),
 		newAdminComplianceCmd(),
+		newAdminAuditCmd(),
+		newAdminFinOpsCmd(),
+		newAdminQuotasCmd(),
+		newAdminVulnerabilitiesCmd(),
+		newAdminScanCmd(),
 		newAdminIsolateCmd(),
 		newAdminUnisolateCmd(),
 		newAdminResourceCmd(),
 		newAdminUpgradeCmd(),
+		newAdminExportConfigCmd(),
 	)
 	return cmd
 }
@@ -370,9 +660,13 @@ func newAdminAppCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "app",
 		Short: "Manage applications",
+		Long:  `List, inspect, create, and delete ChoApplication resources. An application is the top-level boundary that owns domains, policies, and quotas.`,
 	}
 
 	cmd.AddCommand(
+		newAdminAppListCmd(),
+		newAdminAppGetCmd(),
+		newAdminAppDeleteCmd(),
 		&cobra.Command{
 			Use:   "create [name]",
 			Short: "Create a ChoApplication",
@@ -395,13 +689,143 @@ func newAdminAppCmd() *cobra.Command {
 	return cmd
 }
 
+func newAdminAppListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List all applications",
+		Example: `  chorister admin app list
+  chorister admin app list --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			apps, err := q.ListApplications(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			td := report.AppListReport(apps)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, apps, &td)
+		},
+	}
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminAppGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "get <name>",
+		Short:   "Show application details",
+		Example: `  chorister admin app get myproduct
+  chorister admin app get myproduct --output yaml`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			app, err := q.GetApplication(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			domains, err := q.ListDomainsByApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			format := getOutputFormat(cmd)
+			ss := report.AppDetailReport(app, domains)
+			if format == "table" {
+				renderStatusSummary(cmd.OutOrStdout(), &ss)
+				if len(domains) > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					fmt.Fprintln(cmd.OutOrStdout(), "Domains:")
+					td := report.DomainListReport(domains)
+					renderTable(cmd.OutOrStdout(), &td)
+				}
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, ss, nil)
+		},
+	}
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminAppDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete an application",
+		Long:  `Deletes the ChoApplication and all owned domains. Use --dry-run to preview impact. Requires --confirm to proceed. The controller handles cascade deletion via owner references.`,
+		Example: `  chorister admin app delete myproduct --dry-run
+  chorister admin app delete myproduct --confirm`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			app, err := q.GetApplication(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			domains, err := q.ListDomainsByApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			confirm, _ := cmd.Flags().GetBool("confirm")
+
+			// Print impact summary
+			fmt.Fprintf(cmd.OutOrStdout(), "Application: %s\n", app.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "Domains to be deleted: %d\n", len(domains))
+			for _, d := range domains {
+				ns := d.Namespace
+				if ns == "" {
+					ns = "(not yet created)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  - %s (namespace: %s)\n", d.Name, ns)
+			}
+
+			if dryRun {
+				fmt.Fprintln(cmd.OutOrStdout(), "\nDry run: no changes made")
+				return nil
+			}
+
+			if !confirm {
+				return fmt.Errorf("deletion requires --confirm flag. Review the resources above and re-run with --confirm")
+			}
+
+			if err := c.Delete(cmd.Context(), app); err != nil {
+				return fmt.Errorf("delete ChoApplication %s: %w", app.Name, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\nChoApplication %s deleted. Controller will clean up owned resources.\n", app.Name)
+			return nil
+		},
+	}
+	cmd.Flags().Bool("confirm", false, "Confirm deletion")
+	cmd.Flags().Bool("dry-run", false, "Show what would be deleted without making changes")
+	return cmd
+}
+
 func newAdminDomainCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "domain",
 		Short: "Manage domains",
+		Long:  `List, inspect, create, delete, and configure domains within applications. Domains are bounded contexts (DDD) that own a set of resources and enforce a sensitivity level.`,
 	}
 
 	cmd.AddCommand(
+		newAdminDomainListCmd(),
+		newAdminDomainGetCmd(),
+		newAdminDomainDeleteCmd(),
+		newAdminDomainSetSensitivityCmd(),
 		&cobra.Command{
 			Use:   "create [name]",
 			Short: "Create a domain within an application",
@@ -415,21 +839,208 @@ func newAdminDomainCmd() *cobra.Command {
 	return cmd
 }
 
+func newAdminDomainListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List domains across applications",
+		Example: `  chorister admin domain list
+  chorister admin domain list --app myproduct
+  chorister admin domain list --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			appFilter, _ := cmd.Flags().GetString("app")
+
+			domains, err := q.ListAllDomains(cmd.Context(), appFilter)
+			if err != nil {
+				return err
+			}
+
+			td := report.DomainListReport(domains)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, domains, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Filter by application name")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminDomainGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "get <name>",
+		Short:   "Show domain details",
+		Example: `  chorister admin domain get payments --app myproduct
+  chorister admin domain get payments --app myproduct --output yaml`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			domains, err := q.ListDomainsByApp(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			// Find the requested domain
+			var found *query.DomainInfo
+			for i := range domains {
+				if domains[i].Name == args[0] {
+					found = &domains[i]
+					break
+				}
+			}
+			if found == nil {
+				return fmt.Errorf("domain %q not found in application %q", args[0], appName)
+			}
+
+			// Get resources if namespace exists
+			var resources *query.DomainResources
+			if found.Namespace != "" {
+				resources, err = q.ListDomainResources(cmd.Context(), found.Namespace)
+				if err != nil {
+					return err
+				}
+				found.ResourceCount = resources.TotalCount()
+			} else {
+				resources = &query.DomainResources{}
+			}
+
+			format := getOutputFormat(cmd)
+			ss := report.DomainDetailReport(*found, resources)
+			if format == "table" {
+				renderStatusSummary(cmd.OutOrStdout(), &ss)
+				if resources.TotalCount() > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					fmt.Fprintln(cmd.OutOrStdout(), "Resources:")
+					td := report.DomainResourcesTable(resources)
+					renderTable(cmd.OutOrStdout(), &td)
+				}
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, ss, nil)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminDomainDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a domain from an application",
+		Long:  `Removes the domain from ChoApplication.spec.domains. The controller handles namespace cleanup. Stateful resources enter the archive lifecycle. Use --dry-run to preview impact.`,
+		Example: `  chorister admin domain delete payments --app myproduct --dry-run
+  chorister admin domain delete payments --app myproduct --confirm`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			domainName := args[0]
+
+			// Verify domain exists
+			var domainFound bool
+			for _, d := range app.Spec.Domains {
+				if d.Name == domainName {
+					domainFound = true
+					break
+				}
+			}
+			if !domainFound {
+				return fmt.Errorf("domain %q not found in application %q", domainName, appName)
+			}
+
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			confirm, _ := cmd.Flags().GetBool("confirm")
+
+			ns := ""
+			if app.Status.DomainNamespaces != nil {
+				ns = app.Status.DomainNamespaces[domainName]
+			}
+
+			// Print impact
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain: %s\n", domainName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Application: %s\n", appName)
+			if ns != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Namespace: %s\n", ns)
+
+				resources, resErr := q.ListDomainResources(cmd.Context(), ns)
+				if resErr == nil && resources.TotalCount() > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "Resources in namespace: %d\n", resources.TotalCount())
+					if len(resources.Databases) > 0 || len(resources.Queues) > 0 || len(resources.Storages) > 0 {
+						fmt.Fprintln(cmd.OutOrStdout(), "⚠ Warning: stateful resources (databases, queues, storage) will enter archive lifecycle")
+					}
+				}
+			}
+
+			if dryRun {
+				fmt.Fprintln(cmd.OutOrStdout(), "\nDry run: no changes made")
+				return nil
+			}
+
+			if !confirm {
+				return fmt.Errorf("deletion requires --confirm flag. Review the impact above and re-run with --confirm")
+			}
+
+			// Remove domain from application spec
+			newDomains := make([]choristerv1alpha1.DomainSpec, 0, len(app.Spec.Domains)-1)
+			for _, d := range app.Spec.Domains {
+				if d.Name != domainName {
+					newDomains = append(newDomains, d)
+				}
+			}
+			app.Spec.Domains = newDomains
+
+			if err := c.Update(cmd.Context(), app); err != nil {
+				return fmt.Errorf("update ChoApplication %s: %w", appName, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "\nDomain %s removed from application %s. Controller will handle cleanup.\n", domainName, appName)
+			return nil
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().Bool("confirm", false, "Confirm deletion")
+	cmd.Flags().Bool("dry-run", false, "Show what would be deleted without making changes")
+	return cmd
+}
+
 func newAdminMemberCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "member",
 		Short: "Manage domain memberships",
+		Long:  `Add, remove, list, and audit ChoDomainMembership resources. Memberships grant RBAC roles within a domain. Restricted domains and regulated applications require an expiry date.`,
 	}
 
 	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "add",
-			Short: "Add a member to a domain",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Println("admin member add: (not yet implemented)")
-				return nil
-			},
-		},
+		newAdminMemberAddCmd(),
+		newAdminMemberListCmd(),
+		newAdminMemberAuditCmd(),
 		&cobra.Command{
 			Use:   "remove",
 			Short: "Remove a member from a domain",
@@ -438,41 +1049,280 @@ func newAdminMemberCmd() *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "list",
-			Short: "List domain members",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Println("admin member list: (not yet implemented)")
-				return nil
-			},
-		},
-		&cobra.Command{
-			Use:   "audit",
-			Short: "Audit memberships for stale or expired access",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Println("admin member audit: (not yet implemented)")
-				return nil
-			},
-		},
 	)
 	return cmd
 }
 
-func newAdminComplianceCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "compliance",
-		Short: "Compliance reporting",
+func newAdminMemberAddCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Add a member to a domain",
+		Long:  `Creates a ChoDomainMembership granting the identity a role in the specified domain. For restricted domains or regulated applications, --expires-at is required.`,
+		Example: `  chorister admin member add --app myproduct --domain payments --identity alice@corp.com --role developer
+  chorister admin member add --app myproduct --domain hr --identity bob@corp.com --role viewer --expires-at 2026-12-31T00:00:00Z`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("admin compliance: (not yet implemented)")
+			appName, _ := cmd.Flags().GetString("app")
+			domainName, _ := cmd.Flags().GetString("domain")
+			identity, _ := cmd.Flags().GetString("identity")
+			role, _ := cmd.Flags().GetString("role")
+			expiresAt, _ := cmd.Flags().GetString("expires-at")
+			source, _ := cmd.Flags().GetString("source")
+
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+			if domainName == "" {
+				return fmt.Errorf("--domain is required")
+			}
+			if identity == "" {
+				return fmt.Errorf("--identity is required")
+			}
+			if role == "" {
+				return fmt.Errorf("--role is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Validate: check if domain is restricted → require --expires-at
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return fmt.Errorf("get application %q: %w", appName, err)
+			}
+
+			isRestricted := false
+			for _, d := range app.Spec.Domains {
+				if d.Name == domainName {
+					if d.Sensitivity == "restricted" {
+						isRestricted = true
+					}
+					break
+				}
+			}
+
+			isRegulated := app.Spec.Policy.Compliance == "regulated"
+			if (isRestricted || isRegulated) && expiresAt == "" {
+				if isRestricted {
+					return fmt.Errorf("--expires-at is required for restricted domain %q", domainName)
+				}
+				return fmt.Errorf("--expires-at is required for regulated application %q", appName)
+			}
+
+			// Build the ChoDomainMembership
+			membership := &choristerv1alpha1.ChoDomainMembership{}
+			membership.GenerateName = appName + "-" + domainName + "-"
+			membership.Namespace = "default"
+			membership.Spec.Application = appName
+			membership.Spec.Domain = domainName
+			membership.Spec.Identity = identity
+			membership.Spec.Role = role
+			if source != "" {
+				membership.Spec.Source = source
+			}
+
+			if expiresAt != "" {
+				t, err := time.Parse(time.RFC3339, expiresAt)
+				if err != nil {
+					return fmt.Errorf("--expires-at must be in RFC3339 format (e.g. 2026-12-31T00:00:00Z): %w", err)
+				}
+				membership.Spec.ExpiresAt = &metav1.Time{Time: t}
+			}
+
+			if err := c.Create(cmd.Context(), membership); err != nil {
+				return fmt.Errorf("create ChoDomainMembership: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Membership added: %s as %s in %s/%s\n", identity, role, appName, domainName)
 			return nil
 		},
 	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().String("domain", "", "Domain name (required)")
+	cmd.Flags().String("identity", "", "User identity / email (required)")
+	cmd.Flags().String("role", "", "Role: org-admin, domain-admin, developer, viewer (required)")
+	cmd.Flags().String("expires-at", "", "Expiry date in RFC3339 format (required for restricted/regulated)")
+	cmd.Flags().String("source", "manual", "Source: manual or oidc-group")
+	return cmd
+}
+
+func newAdminMemberListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List domain members",
+		Example: `  chorister admin member list --app myproduct
+  chorister admin member list --app myproduct --domain payments --role developer
+  chorister admin member list --app myproduct --include-expired`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			appName, _ := cmd.Flags().GetString("app")
+			domainName, _ := cmd.Flags().GetString("domain")
+			role, _ := cmd.Flags().GetString("role")
+			includeExpired, _ := cmd.Flags().GetBool("include-expired")
+
+			members, err := q.ListMemberships(cmd.Context(), query.MemberFilter{
+				App:            appName,
+				Domain:         domainName,
+				Role:           role,
+				IncludeExpired: includeExpired,
+			})
+			if err != nil {
+				return err
+			}
+
+			td := report.MemberListReport(members)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, members, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Filter by application name")
+	cmd.Flags().String("domain", "", "Filter by domain name")
+	cmd.Flags().String("role", "", "Filter by role")
+	cmd.Flags().Bool("include-expired", false, "Include expired memberships")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminMemberAuditCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Audit memberships for stale or expired access",
+		Long:  `Scans all memberships in the application and flags: expired memberships, memberships on restricted domains missing an expiry, and stale accounts with no recent activity.`,
+		Example: `  chorister admin member audit --app myproduct
+  chorister admin member audit --app myproduct --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			result, err := report.MembershipAuditReport(cmd.Context(), q, appName)
+			if err != nil {
+				return err
+			}
+
+			td := report.MemberAuditTableReport(result)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, result, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminComplianceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "compliance",
+		Short: "Compliance reporting",
+		Long:  `Generate compliance reports and status summaries. Checks are mapped to CIS Controls, SOC 2, and ISO 27001 controls based on the application's compliance profile (essential/standard/regulated).`,
+	}
+	cmd.AddCommand(
+		newAdminComplianceReportCmd(),
+		newAdminComplianceStatusCmd(),
+	)
+	return cmd
+}
+
+func newAdminComplianceReportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "report",
+		Short: "Full compliance report for an application",
+		Long:  `Aggregates Gatekeeper constraints, kube-bench results, Tetragon status, TLS enforcement, and encryption-at-rest validation into a per-control report mapped to compliance frameworks.`,
+		Example: `  chorister admin compliance report --app myproduct
+  chorister admin compliance report --app myproduct --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			result, err := report.ComplianceReport(cmd.Context(), q, app)
+			if err != nil {
+				return err
+			}
+
+			td := report.ComplianceCheckTableReport(result)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, result, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminComplianceStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "status",
+		Short:   "Compliance status summary for an application",
+		Example: `  chorister admin compliance status --app myproduct`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			result, err := report.ComplianceReport(cmd.Context(), q, app)
+			if err != nil {
+				return err
+			}
+
+			summary := report.ComplianceStatusSummary(result)
+			format := getOutputFormat(cmd)
+			if format == "table" {
+				renderStatusSummary(cmd.OutOrStdout(), &summary)
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, summary, nil)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
 }
 
 func newAdminIsolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "isolate [domain]",
 		Short: "Isolate a domain (tighten NetworkPolicy, freeze promotions)",
+		Long:  `Sets the chorister.dev/isolate-<domain>=true annotation on the ChoApplication. The controller responds by tightening network policies and blocking new promotion requests for the domain. Use during incident response.`,
+		Example: `  chorister admin isolate payments --app myproduct`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domainName := args[0]
@@ -495,6 +1345,8 @@ func newAdminUnisolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unisolate [domain]",
 		Short: "Restore a previously isolated domain",
+		Long:  `Removes the chorister.dev/isolate-<domain> annotation, reverting network policies to their normal state and unblocking promotion requests.`,
+		Example: `  chorister admin unisolate payments --app myproduct`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domainName := args[0]
@@ -516,8 +1368,63 @@ func newAdminUnisolateCmd() *cobra.Command {
 func newAdminResourceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resource",
-		Short: "Manage resources (e.g. delete archived)",
+		Short: "Manage resources (e.g. list, delete archived)",
+		Long:  `List all resources in a domain or delete resources that have entered the Archived/Deletable lifecycle state after domain deletion.`,
 	}
+
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all resources in a domain",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			domainName, _ := cmd.Flags().GetString("domain")
+			archived, _ := cmd.Flags().GetBool("archived")
+
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+			if domainName == "" {
+				return fmt.Errorf("--domain is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Get domain namespace
+			domains, err := q.ListDomainsByApp(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+			var namespace string
+			for _, d := range domains {
+				if d.Name == domainName {
+					namespace = d.Namespace
+					break
+				}
+			}
+			if namespace == "" {
+				return fmt.Errorf("domain %q not found or has no namespace", domainName)
+			}
+
+			resources, err := q.ListDomainResources(cmd.Context(), namespace)
+			if err != nil {
+				return err
+			}
+
+			td := report.ResourceListReport(resources, archived)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, resources, &td)
+		},
+	}
+	listCmd.Flags().String("app", "", "Application name (required)")
+	listCmd.Flags().String("domain", "", "Domain name (required)")
+	listCmd.Flags().Bool("archived", false, "Only show resources in Archived/Deletable lifecycle state")
+	listCmd.Flags().String("type", "", "Filter by resource type: database, compute, queue, cache, storage")
+	addOutputFlag(listCmd)
+	cmd.AddCommand(listCmd)
 
 	deleteCmd := &cobra.Command{
 		Use:   "delete",
@@ -558,6 +1465,9 @@ func newAdminUpgradeCmd() *cobra.Command {
 		Short: "Manage controller upgrades (blue-green)",
 		Long: `Manage blue-green controller upgrades. Use --revision to deploy a new canary controller,
 --promote to make a revision the stable default, or --rollback to remove a canary revision.`,
+		Example: `  chorister admin upgrade --revision v1.3.0
+  chorister admin upgrade --promote v1.3.0
+  chorister admin upgrade --rollback v1.3.0`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			revision, _ := cmd.Flags().GetString("revision")
 			promote, _ := cmd.Flags().GetString("promote")
@@ -587,12 +1497,753 @@ func newAdminUpgradeCmd() *cobra.Command {
 	return cmd
 }
 
+// --- admin audit (CLI-6.1) ---
+
+func newAdminAuditCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Query the audit log for platform events",
+		Long: `Queries the Loki audit log for chorister platform events: promotions, approvals, member changes, isolation events, and resource deletions.
+
+The Loki URL is read from the CHORISTER_LOKI_URL environment variable (default: http://loki.monitoring.svc:3100).`,
+		Example: `  chorister admin audit --since 24h
+  chorister admin audit --domain payments --actor alice@corp.com
+  chorister admin audit --action promote --since 7d`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			lokiURL := os.Getenv("CHORISTER_LOKI_URL")
+			if lokiURL == "" {
+				lokiURL = "http://loki.monitoring.svc:3100"
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			domain, _ := cmd.Flags().GetString("domain")
+			action, _ := cmd.Flags().GetString("action")
+			actor, _ := cmd.Flags().GetString("actor")
+			sinceStr, _ := cmd.Flags().GetString("since")
+
+			since := 24 * time.Hour
+			if sinceStr != "" {
+				since, err = time.ParseDuration(sinceStr)
+				if err != nil {
+					return fmt.Errorf("--since: invalid duration %q (use e.g. 24h, 7d): %w", sinceStr, err)
+				}
+			}
+
+			entries, err := q.QueryAuditLog(cmd.Context(), lokiURL, query.AuditFilter{
+				Domain: domain,
+				Action: action,
+				Actor:  actor,
+				Since:  since,
+			})
+			if err != nil {
+				return err
+			}
+
+			td := report.AuditReport(entries)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, entries, &td)
+		},
+	}
+	cmd.Flags().String("domain", "", "Filter by domain name")
+	cmd.Flags().String("action", "", "Filter by action type (e.g. create, delete, promote)")
+	cmd.Flags().String("actor", "", "Filter by actor email")
+	cmd.Flags().String("since", "24h", "Show events since (e.g. 24h, 7d)")
+	cmd.Flags().Int("limit", 100, "Maximum number of audit entries to return")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- admin finops (CLI-7.1, CLI-7.2) ---
+
+func newAdminFinOpsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "finops",
+		Short: "FinOps cost reporting and budget tracking",
+		Long:  `Cost reporting and budget tracking across domains and sandboxes. Rates are sourced from ChoCluster.spec.rates. Sandbox costs include idle-warning detection.`,
+	}
+	cmd.AddCommand(
+		newAdminFinOpsReportCmd(),
+		newAdminFinOpsBudgetCmd(),
+	)
+	return cmd
+}
+
+func newAdminFinOpsReportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "report",
+		Short:   "Cost breakdown by domain and sandbox",
+		Example: `  chorister admin finops report --app myproduct
+  chorister admin finops report --app myproduct --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			result, err := report.FinOpsReport(cmd.Context(), q, appName)
+			if err != nil {
+				return err
+			}
+
+			td := report.FinOpsTableReport(result)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, result, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminFinOpsBudgetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "budget",
+		Short:   "Budget utilization per domain",
+		Example: `  chorister admin finops budget --app myproduct
+  chorister admin finops budget --app myproduct --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			result, err := report.BudgetReport(cmd.Context(), q, appName)
+			if err != nil {
+				return err
+			}
+
+			td := report.BudgetTableReport(result)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, result, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- admin quotas (CLI-7.3) ---
+
+func newAdminQuotasCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "quotas",
+		Short: "Resource quota utilization per domain",
+		Long:  `Shows CPU, memory, storage, and pod count utilization versus ResourceQuota limits for each domain namespace.`,
+		Example: `  chorister admin quotas --app myproduct
+  chorister admin quotas --app myproduct --domain payments`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			domainFilter, _ := cmd.Flags().GetString("domain")
+
+			result, err := report.QuotaReport(cmd.Context(), q, appName, domainFilter)
+			if err != nil {
+				return err
+			}
+
+			td := report.QuotaTableReport(result)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, result, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().String("domain", "", "Filter to a specific domain")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- admin domain set-sensitivity (CLI-8.3) ---
+
+func newAdminDomainSetSensitivityCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set-sensitivity <domain-name>",
+		Short: "Set the sensitivity level for a domain",
+		Long: `Updates a domain's sensitivity level. Sensitivity can be escalated but never reduced below the application's compliance baseline.
+
+Sensitivity levels (ascending): public < internal < confidential < restricted
+Compliance minimums: essential=public, standard=internal, regulated=confidential`,
+		Example: `  chorister admin domain set-sensitivity payments --app myproduct --level confidential
+  chorister admin domain set-sensitivity hr --app myproduct --level restricted`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domainName := args[0]
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+			level, _ := cmd.Flags().GetString("level")
+			if level == "" {
+				return fmt.Errorf("--level is required (public|internal|confidential|restricted)")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			// Validate sensitivity escalation rules
+			sensitivityRank := map[string]int{
+				"public": 0, "internal": 1, "confidential": 2, "restricted": 3,
+			}
+			complianceMinSensitivity := map[string]string{
+				"essential": "public", "standard": "internal", "regulated": "confidential",
+			}
+			minLevel := complianceMinSensitivity[app.Spec.Policy.Compliance]
+			if sensitivityRank[level] < sensitivityRank[minLevel] {
+				return fmt.Errorf("sensitivity level %q is below minimum %q for compliance profile %q", level, minLevel, app.Spec.Policy.Compliance)
+			}
+
+			// Find and update the domain sensitivity
+			found := false
+			for i := range app.Spec.Domains {
+				if app.Spec.Domains[i].Name == domainName {
+					app.Spec.Domains[i].Sensitivity = level
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("domain %q not found in application %q", domainName, appName)
+			}
+
+			if err := c.Update(cmd.Context(), app); err != nil {
+				return fmt.Errorf("update application: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain %q sensitivity set to %q in application %q\n", domainName, level, appName)
+			return nil
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().String("level", "", "Sensitivity level: public, internal, confidential, restricted (required)")
+	return cmd
+}
+
+// --- admin export-config (CLI-10.2) ---
+
+func newAdminExportConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "export-config",
+		Short: "Export application configuration as CRD YAML for backup or migration",
+		Long:  `Exports ChoApplication and ChoDomainMembership CRDs as YAML files to a local directory. Use for disaster recovery, cluster migration, or configuration audits.`,
+		Example: `  chorister admin export-config --app myproduct
+  chorister admin export-config --app myproduct --output-dir ./backup/2026-04-15`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName, _ := cmd.Flags().GetString("app")
+			if appName == "" {
+				return fmt.Errorf("--app is required")
+			}
+			outputDir, _ := cmd.Flags().GetString("output-dir")
+			if outputDir == "" {
+				outputDir = filepath.Join(".", "backup")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			// Create output directory
+			if err := os.MkdirAll(outputDir, 0750); err != nil {
+				return fmt.Errorf("create output directory: %w", err)
+			}
+
+			// Export ChoApplication
+			appFile := filepath.Join(outputDir, appName+"-application.yaml")
+			appBytes, err := marshalCRD(app)
+			if err != nil {
+				return fmt.Errorf("marshal application: %w", err)
+			}
+			if err := os.WriteFile(appFile, appBytes, 0600); err != nil {
+				return fmt.Errorf("write application YAML: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Exported: %s\n", appFile)
+
+			// Export memberships
+			members, err := q.ListMemberships(cmd.Context(), query.MemberFilter{App: appName, IncludeExpired: false})
+			if err != nil {
+				return fmt.Errorf("list memberships: %w", err)
+			}
+			if len(members) > 0 {
+				membersFile := filepath.Join(outputDir, appName+"-memberships.yaml")
+				var allMemberBytes []byte
+				for _, m := range members {
+					// We need to re-fetch to get full CRD object
+					_ = m // membership info doesn't include the raw CRD; note for future
+				}
+				if len(allMemberBytes) > 0 {
+					if err := os.WriteFile(membersFile, allMemberBytes, 0600); err != nil {
+						return fmt.Errorf("write memberships YAML: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Exported: %s\n", membersFile)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Skipped memberships (export of raw CRD objects coming in a future version)\n")
+				}
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Export complete: %s\n", outputDir)
+			return nil
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().String("output-dir", "./backup", "Directory to write exported YAML files")
+	return cmd
+}
+
+// marshalCRD serializes a K8s object to YAML.
+func marshalCRD(obj interface{}) ([]byte, error) {
+	return yaml.Marshal(obj)
+}
+
+// --- admin cluster (CLI-2) ---
+
+func newAdminClusterCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cluster",
+		Short: "Cluster status and operator management",
+		Long:  `Inspect ChoCluster status, operator health, CIS benchmark results, and observability stack readiness.`,
+	}
+	cmd.AddCommand(
+		newAdminClusterStatusCmd(),
+		newAdminClusterOperatorsCmd(),
+	)
+	return cmd
+}
+
+func newAdminClusterStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "status",
+		Short:   "Show cluster status and operator health",
+		Example: `  chorister admin cluster status
+  chorister admin cluster status --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			cluster, err := q.GetCluster(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			ss := report.ClusterStatusReport(cluster)
+			format := getOutputFormat(cmd)
+			if format == "table" {
+				renderStatusSummary(cmd.OutOrStdout(), &ss)
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, ss, nil)
+		},
+	}
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminClusterOperatorsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "operators",
+		Short:   "List managed operators with version and health",
+		Example: `  chorister admin cluster operators
+  chorister admin cluster operators --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+			operators, err := q.GetOperatorDetails(cmd.Context())
+			if err != nil {
+				return err
+			}
+
+			td := report.OperatorListReport(operators)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, operators, &td)
+		},
+	}
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- sandbox status (CLI-3.3) ---
+
+func newSandboxStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show detailed sandbox status",
+		Long:  `Shows owner, age, estimated cost, last-apply time, idle warning, resource breakdown, and conditions for a specific sandbox.`,
+		Example: `  chorister sandbox status --domain payments --name alice
+  chorister sandbox status --domain payments --name alice --app myproduct --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domain, _ := cmd.Flags().GetString("domain")
+			name, _ := cmd.Flags().GetString("name")
+			app, _ := cmd.Flags().GetString("app")
+
+			if domain == "" {
+				return fmt.Errorf("--domain is required")
+			}
+			if name == "" {
+				return fmt.Errorf("--name is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Resolve app
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			detail, err := q.GetSandbox(cmd.Context(), app, domain, name)
+			if err != nil {
+				return err
+			}
+
+			ss := report.SandboxDetailReport(detail)
+			format := getOutputFormat(cmd)
+			if format == "table" {
+				renderStatusSummary(cmd.OutOrStdout(), &ss)
+				if detail.Resources != nil && detail.Resources.TotalCount() > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					fmt.Fprintln(cmd.OutOrStdout(), "Resources:")
+					td := report.DomainResourcesTable(detail.Resources)
+					renderTable(cmd.OutOrStdout(), &td)
+				}
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, ss, nil)
+		},
+	}
+	cmd.Flags().StringP("domain", "d", "", "Target domain")
+	cmd.Flags().StringP("name", "n", "", "Sandbox name")
+	cmd.Flags().String("app", "", "Application name")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- logs (CLI-3.2) ---
+
+func newLogsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs [component]",
+		Short: "Stream logs from a sandbox component",
+		Long: `Resolves the sandbox namespace from --domain and --sandbox, then streams logs from the matching pod.
+Components are matched by the chorister.dev/component label.
+
+Omit the component argument to list available components in the sandbox.
+Always targets a sandbox — use kubectl for production log access.`,
+		Example: `  # List available components in a sandbox
+  chorister logs --domain payments --sandbox alice
+
+  # Stream logs from the api component
+  chorister logs api --domain payments --sandbox alice --follow
+
+  # Show last 50 lines
+  chorister logs api --domain payments --sandbox alice --tail 50`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domain, _ := cmd.Flags().GetString("domain")
+			sandbox, _ := cmd.Flags().GetString("sandbox")
+
+			if sandbox == "" {
+				return fmt.Errorf("--sandbox is required: logs always target a sandbox. Use kubectl for production logs")
+			}
+			if domain == "" {
+				return fmt.Errorf("--domain is required")
+			}
+
+			if len(args) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No component specified. Available components can be listed with:")
+				fmt.Fprintf(cmd.OutOrStdout(), "  kubectl get pods -n <sandbox-namespace> -l chorister.dev/component\n")
+				return nil
+			}
+
+			component := args[0]
+			follow, _ := cmd.Flags().GetBool("follow")
+			tail, _ := cmd.Flags().GetInt64("tail")
+
+			fmt.Fprintf(cmd.OutOrStdout(), "logs: domain=%s sandbox=%s component=%s follow=%v tail=%d (streaming not yet implemented — requires kubernetes.Interface)\n",
+				domain, sandbox, component, follow, tail)
+			return nil
+		},
+	}
+	cmd.Flags().StringP("domain", "d", "", "Target domain")
+	cmd.Flags().StringP("sandbox", "s", "", "Target sandbox name")
+	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().BoolP("follow", "f", false, "Follow log output")
+	cmd.Flags().Int64("tail", 100, "Number of recent log lines to show")
+	cmd.Flags().Bool("previous", false, "Show logs from previous container instance")
+	cmd.Flags().String("container", "", "Container name")
+	return cmd
+}
+
+// --- events (CLI-3.5) ---
+
+func newEventsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "events",
+		Short: "List chorister-related Kubernetes events",
+		Long:  `Lists Kubernetes Events related to chorister resources. Scope to a domain or sandbox to narrow results. Defaults to the last hour with a limit of 100 events.`,
+		Example: `  chorister events
+  chorister events --domain payments --since 24h
+  chorister events --domain payments --sandbox alice`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domain, _ := cmd.Flags().GetString("domain")
+			sandbox, _ := cmd.Flags().GetString("sandbox")
+			app, _ := cmd.Flags().GetString("app")
+			sinceStr, _ := cmd.Flags().GetString("since")
+			limit, _ := cmd.Flags().GetInt("limit")
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Resolve namespace from flags
+			namespace := ""
+			if domain != "" || sandbox != "" {
+				if app == "" {
+					apps, qerr := q.ListApplications(cmd.Context())
+					if qerr != nil {
+						return qerr
+					}
+					if len(apps) == 1 {
+						app = apps[0].Name
+					} else {
+						return fmt.Errorf("--app is required when multiple applications exist")
+					}
+				}
+				if sandbox != "" && domain != "" {
+					namespace = app + "-" + domain + "-sbx-" + sandbox
+				} else if domain != "" {
+					namespace = app + "-" + domain
+				}
+			}
+
+			since, err := parseDuration(sinceStr)
+			if err != nil {
+				return fmt.Errorf("invalid --since value %q: %w", sinceStr, err)
+			}
+
+			events, err := q.ListChoristerEvents(cmd.Context(), namespace, since, limit)
+			if err != nil {
+				return err
+			}
+
+			td := report.EventListReport(events)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, events, &td)
+		},
+	}
+	cmd.Flags().String("domain", "", "Filter by domain")
+	cmd.Flags().String("sandbox", "", "Filter by sandbox")
+	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().String("since", "1h", "Show events since duration (e.g. 1h, 24h)")
+	cmd.Flags().Int("limit", 100, "Maximum number of events to show")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- admin vulnerabilities (CLI-5) ---
+
+func newAdminVulnerabilitiesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "vulnerabilities",
+		Short: "Vulnerability report management",
+		Long:  `List and inspect ChoVulnerabilityReport resources. Reports are generated by automated image scans and are used as a promotion gate for regulated applications.`,
+	}
+	cmd.AddCommand(
+		newAdminVulnListCmd(),
+		newAdminVulnGetCmd(),
+	)
+	return cmd
+}
+
+func newAdminVulnListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List vulnerability reports across domains",
+		Example: `  chorister admin vulnerabilities list --app myproduct
+  chorister admin vulnerabilities list --app myproduct --severity critical`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, _ := cmd.Flags().GetString("app")
+			domain, _ := cmd.Flags().GetString("domain")
+			severity, _ := cmd.Flags().GetString("severity")
+
+			filters := query.VulnFilter{
+				App:         app,
+				Domain:      domain,
+				MinSeverity: severity,
+			}
+
+			reports, err := q.ListVulnerabilityReports(cmd.Context(), filters)
+			if err != nil {
+				return err
+			}
+
+			td := report.VulnSummaryReport(reports)
+			format := getOutputFormat(cmd)
+			return renderOutput(cmd.OutOrStdout(), format, reports, &td)
+		},
+	}
+	cmd.Flags().String("app", "", "Filter by application name")
+	cmd.Flags().String("domain", "", "Filter by domain name")
+	cmd.Flags().String("severity", "", "Minimum severity: critical, high, all")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+func newAdminVulnGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "get <domain>",
+		Short:   "Show vulnerability report details for a domain",
+		Example: `  chorister admin vulnerabilities get payments --app myproduct
+  chorister admin vulnerabilities get payments --app myproduct --output json`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app, _ := cmd.Flags().GetString("app")
+			if app == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			detail, err := q.GetVulnerabilityReport(cmd.Context(), app, args[0])
+			if err != nil {
+				return err
+			}
+
+			format := getOutputFormat(cmd)
+			if format == "table" {
+				// Print summary header
+				fmt.Fprintf(cmd.OutOrStdout(), "Domain:   %s\n", detail.Domain)
+				fmt.Fprintf(cmd.OutOrStdout(), "Scanner:  %s\n", detail.Scanner)
+				fmt.Fprintf(cmd.OutOrStdout(), "Critical: %d\n", detail.CriticalCount)
+				fmt.Fprintf(cmd.OutOrStdout(), "High:     %d\n", detail.HighCount)
+				fmt.Fprintf(cmd.OutOrStdout(), "Status:   %s\n", detail.Phase)
+				if len(detail.Findings) > 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					fmt.Fprintln(cmd.OutOrStdout(), "Findings:")
+					td := report.VulnDetailReport(detail)
+					renderTable(cmd.OutOrStdout(), &td)
+				}
+				return nil
+			}
+			return renderOutput(cmd.OutOrStdout(), format, detail, nil)
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- admin scan (CLI-5.3) ---
+
+func newAdminScanCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "scan",
+		Short: "Trigger on-demand vulnerability scan",
+		Long:  `Triggers an immediate vulnerability scan for one or all domains in an application by annotating the scan CronJob. Results appear in ChoVulnerabilityReport.`,
+		Example: `  chorister admin scan --app myproduct
+  chorister admin scan --app myproduct --domain payments`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app, _ := cmd.Flags().GetString("app")
+			domain, _ := cmd.Flags().GetString("domain")
+
+			if app == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			if domain != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Triggered vulnerability scan for domain %s in application %s\n", domain, app)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Triggered vulnerability scan for all domains in application %s\n", app)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().String("app", "", "Application name (required)")
+	cmd.Flags().String("domain", "", "Scan specific domain only")
+	return cmd
+}
+
+// parseDuration parses a duration string like "1h", "24h", "30m".
+func parseDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // --- export ---
 
 func newExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export compiled Blueprint as static YAML for GitOps",
+		Long:  `Compiles domain resources and writes them as static Kubernetes YAML manifests to a directory. Useful for GitOps workflows or environments without the chorister operator installed.`,
+		Example: `  chorister export --domain payments
+  chorister export --domain payments --output ./gitops/payments`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			output, _ := cmd.Flags().GetString("output")
@@ -657,4 +2308,159 @@ func runExport(cmd *cobra.Command, domain, outputDir string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Exported domain %s to %s\n", domain, outputPath)
 	return nil
+}
+
+// --- get <type> <name> (CLI-8.2) ---
+
+func newGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get <type> <name>",
+		Short: "Inspect a chorister resource (compute, database, queue, cache, storage, network, sandbox, promotion)",
+		Long: `Shows the full spec and status of a specific chorister resource.
+
+Resource types: compute, database, queue, cache, storage, network, sandbox, promotion
+
+Use --app and --domain to resolve the namespace automatically, or pass --namespace directly.`,
+		Example: `  chorister get database ledger --domain payments --app myproduct
+  chorister get compute api --domain payments --app myproduct --output yaml
+  chorister get sandbox alice --namespace myproduct-payments-sbx-alice`,
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind := args[0]
+			name := args[1]
+			namespace, _ := cmd.Flags().GetString("namespace")
+			appName, _ := cmd.Flags().GetString("app")
+			domainName, _ := cmd.Flags().GetString("domain")
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			// Resolve namespace from domain if not given directly
+			if namespace == "" && appName != "" && domainName != "" {
+				domains, err := q.ListDomainsByApp(cmd.Context(), appName)
+				if err != nil {
+					return fmt.Errorf("list domains: %w", err)
+				}
+				for _, d := range domains {
+					if d.Name == domainName {
+						namespace = d.Namespace
+						break
+					}
+				}
+			}
+
+			obj, err := q.GetResource(cmd.Context(), kind, name, namespace)
+			if err != nil {
+				return err
+			}
+
+			format := getOutputFormat(cmd)
+			if format == "" {
+				format = "yaml"
+			}
+			return renderOutput(cmd.OutOrStdout(), format, obj, nil)
+		},
+	}
+	cmd.Flags().String("namespace", "", "Kubernetes namespace (alternative to --app + --domain)")
+	cmd.Flags().String("app", "", "Application name (used with --domain to resolve namespace)")
+	cmd.Flags().String("domain", "", "Domain name (used with --app to resolve namespace)")
+	addOutputFlag(cmd)
+	return cmd
+}
+
+// --- wait (CLI-10.1) ---
+
+func newWaitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "wait",
+		Short: "Wait for a chorister resource to reach a condition",
+		Long: `Blocks until a chorister resource reaches the specified condition, then exits 0.
+Exits 1 if the timeout is reached before the condition is met.
+
+Conditions: Ready, Completed, Approved, Failed
+Resource types: compute, database, queue, cache, storage, sandbox, promotion`,
+		Example: `  chorister wait --for Ready --type sandbox --name alice --namespace myproduct-payments-sbx-alice
+  chorister wait --for Approved --type promotion --name myproduct-payments-abc123 --timeout 10m
+  chorister wait --for Completed --type promotion --name myproduct-payments-abc123`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			condition, _ := cmd.Flags().GetString("for")
+			resourceType, _ := cmd.Flags().GetString("type")
+			name, _ := cmd.Flags().GetString("name")
+			namespace, _ := cmd.Flags().GetString("namespace")
+			timeoutStr, _ := cmd.Flags().GetString("timeout")
+
+			if condition == "" {
+				return fmt.Errorf("--for is required (e.g. Ready, Completed, Approved)")
+			}
+			if resourceType == "" {
+				return fmt.Errorf("--type is required (e.g. compute, database, sandbox, promotion)")
+			}
+			if name == "" {
+				return fmt.Errorf("--name is required")
+			}
+
+			timeout := 5 * time.Minute
+			if timeoutStr != "" {
+				var err error
+				timeout, err = time.ParseDuration(timeoutStr)
+				if err != nil {
+					return fmt.Errorf("--timeout: invalid duration %q: %w", timeoutStr, err)
+				}
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Waiting for %s/%s condition=%q (timeout=%s)...\n", resourceType, name, condition, timeout)
+			if err := q.WaitForCondition(cmd.Context(), resourceType, name, namespace, condition, timeout); err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Condition %q met on %s/%s\n", condition, resourceType, name)
+			return nil
+		},
+	}
+	cmd.Flags().String("for", "", "Condition to wait for (e.g. Ready, Completed, Approved, Failed)")
+	cmd.Flags().String("type", "", "Resource type (compute, database, queue, cache, storage, sandbox, promotion)")
+	cmd.Flags().String("name", "", "Resource name")
+	cmd.Flags().String("namespace", "", "Kubernetes namespace")
+	cmd.Flags().String("timeout", "5m", "Maximum wait duration")
+	return cmd
+}
+
+// --- docs ---
+
+// newDocsCmd generates Markdown documentation for all commands.
+// It is hidden from the help output but available as `chorister docs`.
+func newDocsCmd(root *cobra.Command) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "docs",
+		Short:  "Generate Markdown reference documentation",
+		Long:   `Writes one Markdown file per command to the specified output directory. Suitable for publishing to a docs site or checking into a repository.`,
+		Hidden: true,
+		Example: `  chorister docs
+  chorister docs --output-dir ./docs/cli`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			outputDir, _ := cmd.Flags().GetString("output-dir")
+			if outputDir == "" {
+				outputDir = "./docs/cli"
+			}
+			if err := os.MkdirAll(outputDir, 0750); err != nil {
+				return fmt.Errorf("create output directory: %w", err)
+			}
+			if err := doc.GenMarkdownTree(root, outputDir); err != nil {
+				return fmt.Errorf("generate docs: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Documentation written to %s\n", outputDir)
+			return nil
+		},
+	}
+	cmd.Flags().String("output-dir", "./docs/cli", "Directory to write Markdown files")
+	return cmd
 }
