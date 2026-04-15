@@ -19,6 +19,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +33,7 @@ import (
 	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -169,18 +173,66 @@ func TestCLI_SandboxCreateBudgetExceeded(t *testing.T) {
 }
 
 func TestCLI_DiffOutputFormat(t *testing.T) {
-	t.Skip("awaiting Phase 3: diff command implementation")
+	// Set up resources: sandbox has an extra compute, production has a different image
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{
+		{Name: "payments", Sensitivity: "internal"},
+	}, "Active", "essential")
 
-	out, err := executeCmd("diff", "--domain", "payments", "--sandbox", "alice")
+	sandboxCompute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myproduct-payments-sandbox-alice"},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Application: "myproduct", Domain: "payments", Image: "registry/api:v2"},
+	}
+	sandboxDB := &choristerv1alpha1.ChoDatabase{
+		ObjectMeta: metav1.ObjectMeta{Name: "orders", Namespace: "myproduct-payments-sandbox-alice"},
+		Spec:       choristerv1alpha1.ChoDatabaseSpec{Application: "myproduct", Domain: "payments", Engine: "postgres"},
+	}
+	prodCompute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myproduct-payments"},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Application: "myproduct", Domain: "payments", Image: "registry/api:v1"},
+	}
+
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(app, sandboxCompute, sandboxDB, prodCompute).
+		Build()
+
+	out, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct")
 	if err != nil {
 		t.Fatalf("diff should not error: %v", err)
 	}
 
-	// Diff output is human-readable: added/changed/removed
-	for _, keyword := range []string{"Added", "Changed", "Removed"} {
-		if !strings.Contains(out, keyword) {
-			t.Errorf("diff output should contain %q, got:\n%s", keyword, out)
-		}
+	// Sandbox has extra DB (Added) and changed image on api (Changed)
+	if !strings.Contains(out, "Added") {
+		t.Errorf("diff output should contain Added for new database, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Changed") {
+		t.Errorf("diff output should contain Changed for image diff, got:\n%s", out)
+	}
+}
+
+func TestCLI_DiffNoDifferences(t *testing.T) {
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{
+		{Name: "payments", Sensitivity: "internal"},
+	}, "Active", "essential")
+
+	sandboxCompute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myproduct-payments-sandbox-alice"},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Application: "myproduct", Domain: "payments", Image: "registry/api:v1"},
+	}
+	prodCompute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myproduct-payments"},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Application: "myproduct", Domain: "payments", Image: "registry/api:v1"},
+	}
+
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(app, sandboxCompute, prodCompute).
+		Build()
+
+	out, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct")
+	if err != nil {
+		t.Fatalf("diff should not error: %v", err)
+	}
+	if !strings.Contains(out, "No differences") {
+		t.Errorf("expected 'No differences', got:\n%s", out)
 	}
 }
 
@@ -262,6 +314,75 @@ func TestCLI_SetupIdempotent(t *testing.T) {
 	_, err2 := executeCmd("setup", "--dry-run")
 	if err2 != nil {
 		t.Fatalf("second setup --dry-run should not error: %v", err2)
+	}
+}
+
+func TestCLI_SetupDryRunWithImage(t *testing.T) {
+	out, err := executeCmd("setup", "--dry-run", "--image", "ghcr.io/chorister/chorister:v0.1.0")
+	if err != nil {
+		t.Fatalf("setup --dry-run should not error: %v", err)
+	}
+	if !strings.Contains(out, "ghcr.io/chorister/chorister:v0.1.0") {
+		t.Fatalf("expected image in dry-run output, got: %s", out)
+	}
+}
+
+func TestCLI_SetupWithFakeClient(t *testing.T) {
+	// Create a temp directory with a fake CRD YAML.
+	crdDir := t.TempDir()
+	crdYAML := `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: chocomputes.chorister.dev
+spec:
+  group: chorister.dev
+  names:
+    kind: ChoCompute
+    listKind: ChoComputeList
+    plural: chocomputes
+    singular: chocompute
+  scope: Namespaced
+`
+	if err := os.WriteFile(filepath.Join(crdDir, "chorister.dev_chocomputes.yaml"), []byte(crdYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := testScheme()
+	_ = corev1.AddToScheme(s)
+	fc := fake.NewClientBuilder().WithScheme(s).Build()
+	out, err := executeCmdWithClient(fc, "setup", "--crd-dir", crdDir)
+	if err != nil {
+		t.Fatalf("setup returned unexpected error: %s (output: %s)", err, out)
+	}
+	if !strings.Contains(out, "Namespace cho-system ready") {
+		t.Fatalf("expected namespace creation message, got: %s", out)
+	}
+	if !strings.Contains(out, "Installed 1 CRDs") {
+		t.Fatalf("expected 1 CRD installed, got: %s", out)
+	}
+	if !strings.Contains(out, "Default ChoCluster created") {
+		t.Fatalf("expected ChoCluster creation, got: %s", out)
+	}
+	if !strings.Contains(out, "Setup complete") {
+		t.Fatalf("expected setup complete, got: %s", out)
+	}
+}
+
+func TestCLI_SetupWithImage(t *testing.T) {
+	crdDir := t.TempDir() // empty dir = 0 CRDs
+
+	s := testScheme()
+	_ = corev1.AddToScheme(s)
+	fc := fake.NewClientBuilder().WithScheme(s).Build()
+	out, err := executeCmdWithClient(fc, "setup",
+		"--crd-dir", crdDir,
+		"--image", "ghcr.io/chorister/chorister:v0.1.0",
+	)
+	if err != nil {
+		t.Fatalf("setup returned unexpected error: %s (output: %s)", err, out)
+	}
+	if !strings.Contains(out, "Controller manager deployed") {
+		t.Fatalf("expected controller deployment message, got: %s", out)
 	}
 }
 
@@ -492,6 +613,126 @@ func TestCLI_AdminAppDelete_Confirm(t *testing.T) {
 	_, err = executeCmdWithClient(fc, "admin", "app", "get", "myproduct")
 	if err == nil {
 		t.Fatal("Expected error after deletion")
+	}
+}
+
+func TestCLI_AdminAppCreate(t *testing.T) {
+	s := testScheme()
+	fc := fake.NewClientBuilder().WithScheme(s).Build()
+
+	out, err := executeCmdWithClient(fc, "admin", "app", "create", "newapp",
+		"--owners", "admin@corp.com",
+		"--compliance", "standard",
+		"--domains", "payments,auth")
+	if err != nil {
+		t.Fatalf("admin app create should succeed: %v", err)
+	}
+	if !strings.Contains(out, "Application newapp created") {
+		t.Errorf("expected creation message, got: %s", out)
+	}
+	if !strings.Contains(out, "2 domain(s)") {
+		t.Errorf("expected 2 domains, got: %s", out)
+	}
+
+	// Verify the app exists by listing
+	out2, err := executeCmdWithClient(fc, "admin", "app", "list")
+	if err != nil {
+		t.Fatalf("list should succeed: %v", err)
+	}
+	if !strings.Contains(out2, "newapp") {
+		t.Errorf("created app should appear in list, got: %s", out2)
+	}
+}
+
+func TestCLI_AdminAppCreate_RequiresOwners(t *testing.T) {
+	_, err := executeCmd("admin", "app", "create", "newapp")
+	if err == nil {
+		t.Fatal("expected error when --owners is missing")
+	}
+	if !strings.Contains(err.Error(), "--owners") {
+		t.Fatalf("error should mention --owners, got: %s", err.Error())
+	}
+}
+
+func TestCLI_AdminDomainCreate(t *testing.T) {
+	s := testScheme()
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{
+		{Name: "payments", Sensitivity: "internal"},
+	}, "Active", "essential")
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(app).Build()
+
+	out, err := executeCmdWithClient(fc, "admin", "domain", "create", "billing",
+		"--app", "myproduct", "--sensitivity", "confidential")
+	if err != nil {
+		t.Fatalf("admin domain create should succeed: %v", err)
+	}
+	if !strings.Contains(out, "Domain billing added") {
+		t.Errorf("expected creation message, got: %s", out)
+	}
+}
+
+func TestCLI_AdminDomainCreate_Duplicate(t *testing.T) {
+	s := testScheme()
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{
+		{Name: "payments", Sensitivity: "internal"},
+	}, "Active", "essential")
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(app).Build()
+
+	_, err := executeCmdWithClient(fc, "admin", "domain", "create", "payments", "--app", "myproduct")
+	if err == nil {
+		t.Fatal("expected error when creating duplicate domain")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error should mention 'already exists', got: %s", err.Error())
+	}
+}
+
+func TestCLI_AdminMemberRemove(t *testing.T) {
+	s := testScheme()
+	membership := &choristerv1alpha1.ChoDomainMembership{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myproduct-payments-alice",
+			Namespace: "cho-system",
+		},
+		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+			Application: "myproduct",
+			Domain:      "payments",
+			Identity:    "alice@corp.com",
+			Role:        "developer",
+			Source:      "manual",
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(membership).Build()
+
+	// Without --confirm, should fail
+	_, err := executeCmdWithClient(fc, "admin", "member", "remove",
+		"--app", "myproduct", "--domain", "payments", "--identity", "alice@corp.com")
+	if err == nil {
+		t.Fatal("expected error without --confirm")
+	}
+
+	// With --confirm, should succeed
+	out, err := executeCmdWithClient(fc, "admin", "member", "remove",
+		"--app", "myproduct", "--domain", "payments", "--identity", "alice@corp.com", "--confirm")
+	if err != nil {
+		t.Fatalf("admin member remove should succeed with --confirm: %v", err)
+	}
+	if !strings.Contains(out, "removed") {
+		t.Errorf("expected removal message, got: %s", out)
+	}
+}
+
+func TestCLI_AdminMemberRemove_NotFound(t *testing.T) {
+	s := testScheme()
+	fc := fake.NewClientBuilder().WithScheme(s).Build()
+
+	_, err := executeCmdWithClient(fc, "admin", "member", "remove",
+		"--app", "myproduct", "--domain", "payments", "--identity", "nobody@corp.com", "--confirm")
+	if err == nil {
+		t.Fatal("expected error when membership not found")
+	}
+	if !strings.Contains(err.Error(), "no membership found") {
+		t.Fatalf("error should mention 'no membership found', got: %s", err.Error())
 	}
 }
 
@@ -983,13 +1224,13 @@ func TestCLI_Diff_OutputFlag(t *testing.T) {
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(app).Build()
 
-	// Should accept --output flag — diff is a stub that returns an error
-	_, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct", "--output", "json")
-	if err == nil {
-		t.Fatal("diff should return an error (not yet implemented)")
+	// Should accept --output flag and return JSON diff (no resources = no differences)
+	out, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct", "--output", "json")
+	if err != nil {
+		t.Fatalf("diff should not error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("diff error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(out, "Diffs") {
+		t.Fatalf("JSON output should contain Diffs field, got: %s", out)
 	}
 }
 
@@ -1564,52 +1805,239 @@ func TestCLI_AdminExportConfig_RequiresApp(t *testing.T) {
 // Unimplemented commands must fail with non-zero exit code
 // ---------------------------------------------------------------------------
 
-func TestCLI_Login_NotImplemented(t *testing.T) {
+func TestCLI_Login_RequiresFlags(t *testing.T) {
 	_, err := executeCmd("login")
 	if err == nil {
-		t.Fatal("login should return an error (not yet implemented)")
+		t.Fatal("login should return an error when --issuer is missing")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("login error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(err.Error(), "--issuer is required") {
+		t.Fatalf("login error should mention '--issuer is required', got: %s", err.Error())
 	}
 }
 
-func TestCLI_AdminAppCreate_NotImplemented(t *testing.T) {
+func TestCLI_AdminAppCreate_RequiresOwners2(t *testing.T) {
 	_, err := executeCmd("admin", "app", "create", "testapp")
 	if err == nil {
-		t.Fatal("admin app create should return an error (not yet implemented)")
+		t.Fatal("admin app create should require --owners")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("admin app create error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(err.Error(), "--owners") {
+		t.Fatalf("admin app create error should mention '--owners', got: %s", err.Error())
 	}
 }
 
-func TestCLI_AdminDomainCreate_NotImplemented(t *testing.T) {
+func TestCLI_AdminDomainCreate_RequiresApp(t *testing.T) {
 	_, err := executeCmd("admin", "domain", "create", "testdomain")
 	if err == nil {
-		t.Fatal("admin domain create should return an error (not yet implemented)")
+		t.Fatal("admin domain create should require --app")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("admin domain create error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(err.Error(), "--app") {
+		t.Fatalf("admin domain create error should mention '--app', got: %s", err.Error())
 	}
 }
 
-func TestCLI_AdminMemberRemove_NotImplemented(t *testing.T) {
+func TestCLI_AdminMemberRemove_RequiresFlags(t *testing.T) {
 	_, err := executeCmd("admin", "member", "remove")
 	if err == nil {
-		t.Fatal("admin member remove should return an error (not yet implemented)")
+		t.Fatal("admin member remove should require --app")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("admin member remove error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(err.Error(), "--app") {
+		t.Fatalf("admin member remove error should mention '--app', got: %s", err.Error())
 	}
 }
 
-func TestCLI_Apply_NotImplemented(t *testing.T) {
+func TestCLI_Apply_RequiresFile(t *testing.T) {
 	_, err := executeCmd("apply", "--domain", "payments", "--sandbox", "alice")
 	if err == nil {
-		t.Fatal("apply should return an error (not yet implemented)")
+		t.Fatal("apply should return an error when --file is missing")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("apply error should mention 'not yet implemented', got: %s", err.Error())
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("apply error should mention '--file', got: %s", err.Error())
+	}
+}
+
+func TestCLI_Apply_HappyPath(t *testing.T) {
+	// Write a temp YAML file with compute + database.
+	tmpFile := filepath.Join(t.TempDir(), "infra.yaml")
+	yamlContent := `---
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: api
+spec:
+  application: placeholder
+  domain: placeholder
+  image: myregistry/api:v1
+---
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDatabase
+metadata:
+  name: main
+spec:
+  application: placeholder
+  domain: placeholder
+  engine: postgres
+`
+	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "myapp", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"team@example.com"},
+			Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "essential"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(app).Build()
+
+	out, err := executeCmdWithClient(fc, "apply",
+		"--app", "myapp",
+		"--domain", "payments",
+		"--sandbox", "alice",
+		"--file", tmpFile,
+	)
+	if err != nil {
+		t.Fatalf("apply returned unexpected error: %s (output: %s)", err, out)
+	}
+	if !strings.Contains(out, "Applied 2 resources") {
+		t.Fatalf("expected 'Applied 2 resources', got: %s", out)
+	}
+	if !strings.Contains(out, "created: 2") {
+		t.Fatalf("expected 'created: 2', got: %s", out)
+	}
+
+	// Verify the resources were created in the sandbox namespace.
+	var compute choristerv1alpha1.ChoCompute
+	if err := fc.Get(t.Context(), types.NamespacedName{
+		Name: "api", Namespace: "myapp-payments-sandbox-alice",
+	}, &compute); err != nil {
+		t.Fatalf("expected compute to exist: %v", err)
+	}
+	if compute.Spec.Application != "myapp" {
+		t.Fatalf("expected application=myapp, got %s", compute.Spec.Application)
+	}
+	if compute.Spec.Domain != "payments" {
+		t.Fatalf("expected domain=payments, got %s", compute.Spec.Domain)
+	}
+}
+
+func TestCLI_Apply_UpdateExisting(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "infra.yaml")
+	yamlContent := `apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: api
+spec:
+  application: myapp
+  domain: payments
+  image: myregistry/api:v2
+`
+	if err := os.WriteFile(tmpFile, []byte(yamlContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "myapp", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"team@example.com"},
+			Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "essential"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+		},
+	}
+	existing := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api",
+			Namespace: "myapp-payments-sandbox-alice",
+		},
+		Spec: choristerv1alpha1.ChoComputeSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Image:       "myregistry/api:v1",
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(app, existing).Build()
+
+	out, err := executeCmdWithClient(fc, "apply",
+		"--app", "myapp",
+		"--domain", "payments",
+		"--sandbox", "alice",
+		"--file", tmpFile,
+	)
+	if err != nil {
+		t.Fatalf("apply returned unexpected error: %s (output: %s)", err, out)
+	}
+	if !strings.Contains(out, "updated: 1") {
+		t.Fatalf("expected 'updated: 1', got: %s", out)
+	}
+
+	// Verify the image was updated.
+	var compute choristerv1alpha1.ChoCompute
+	if err := fc.Get(t.Context(), types.NamespacedName{
+		Name: "api", Namespace: "myapp-payments-sandbox-alice",
+	}, &compute); err != nil {
+		t.Fatalf("expected compute to exist: %v", err)
+	}
+	if compute.Spec.Image != "myregistry/api:v2" {
+		t.Fatalf("expected image v2, got %s", compute.Spec.Image)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C.3.1 — Login command tests
+// ---------------------------------------------------------------------------
+
+func TestLogin_RequiresIssuer(t *testing.T) {
+	out, err := executeCmd("login")
+	if err == nil {
+		t.Fatal("expected error when --issuer missing")
+	}
+	if !strings.Contains(err.Error(), "--issuer is required") {
+		t.Fatalf("expected --issuer error, got: %s (output: %s)", err, out)
+	}
+}
+
+func TestLogin_RequiresClientID(t *testing.T) {
+	out, err := executeCmd("login", "--issuer", "https://idp.example.com")
+	if err == nil {
+		t.Fatal("expected error when --client-id missing")
+	}
+	if !strings.Contains(err.Error(), "--client-id is required") {
+		t.Fatalf("expected --client-id error, got: %s (output: %s)", err, out)
+	}
+}
+
+func TestLogin_DiscoveryFailure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	out, err := executeCmd("login", "--issuer", ts.URL, "--client-id", "test-client")
+	if err == nil {
+		t.Fatal("expected error on discovery failure")
+	}
+	if !strings.Contains(err.Error(), "OIDC discovery returned 404") {
+		t.Fatalf("unexpected error: %s (output: %s)", err, out)
+	}
+}
+
+func TestLogin_NoDeviceEndpoint(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"token_endpoint":"http://localhost/token"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	_, err := executeCmd("login", "--issuer", ts.URL, "--client-id", "test-client")
+	if err == nil {
+		t.Fatal("expected error when no device authorization endpoint")
+	}
+	if !strings.Contains(err.Error(), "does not support device authorization") {
+		t.Fatalf("unexpected error: %s", err)
 	}
 }

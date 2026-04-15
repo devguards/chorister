@@ -26,7 +26,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,6 +39,15 @@ import (
 )
 
 const dbFinalizerName = "chorister.dev/database-archive"
+
+var (
+	sgClusterGVK = schema.GroupVersionKind{
+		Group: "stackgres.io", Version: "v1", Kind: "SGCluster",
+	}
+	sgInstanceProfileGVK = schema.GroupVersionKind{
+		Group: "stackgres.io", Version: "v1", Kind: "SGInstanceProfile",
+	}
+)
 
 // ChoDatabaseReconciler reconciles a ChoDatabase object
 type ChoDatabaseReconciler struct {
@@ -51,6 +62,8 @@ type ChoDatabaseReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=stackgres.io,resources=sgclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=stackgres.io,resources=sginstanceprofiles,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile moves the cluster state to match the desired ChoDatabase spec.
 func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -102,6 +115,20 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	instances := int32(1)
 	if db.Spec.HA {
 		instances = 2
+	}
+
+	// Ensure StackGres SGInstanceProfile
+	profileName := fmt.Sprintf("%s-%s", db.Spec.Domain, db.Name)
+	if err := r.ensureSGInstanceProfile(ctx, db, profileName); err != nil {
+		log.Error(err, "Failed to ensure SGInstanceProfile", "name", profileName)
+		// Non-fatal: continue even if StackGres CRDs are not installed
+	}
+
+	// Ensure StackGres SGCluster
+	sgClusterName := fmt.Sprintf("%s-%s", db.Spec.Domain, db.Name)
+	if err := r.ensureSGCluster(ctx, db, sgClusterName, profileName, instances); err != nil {
+		log.Error(err, "Failed to ensure SGCluster", "name", sgClusterName)
+		// Non-fatal: continue even if StackGres CRDs are not installed
 	}
 
 	// Ensure credential secret
@@ -270,6 +297,138 @@ func (r *ChoDatabaseReconciler) ensureCredentialSecret(ctx context.Context, db *
 	}
 
 	return r.Create(ctx, secret)
+}
+
+// ensureSGCluster creates or updates a StackGres SGCluster for the database.
+func (r *ChoDatabaseReconciler) ensureSGCluster(ctx context.Context, db *choristerv1alpha1.ChoDatabase, name string, profileName string, instances int32) error {
+	desired := buildSGCluster(db, name, profileName, instances)
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(sgClusterGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: db.Namespace}, existing)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, desired)
+	}
+
+	// Update existing — preserve resourceVersion.
+	desired.SetResourceVersion(existing.GetResourceVersion())
+	return r.Update(ctx, desired)
+}
+
+// buildSGCluster constructs an unstructured SGCluster with Patroni HA and PgBouncer.
+func buildSGCluster(db *choristerv1alpha1.ChoDatabase, name, profileName string, instances int32) *unstructured.Unstructured {
+	volumeSize := dbVolumeSize(db.Spec.Size)
+
+	sgCluster := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "stackgres.io/v1",
+			"kind":       "SGCluster",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": db.Namespace,
+				"labels": map[string]interface{}{
+					labelApplication:           db.Spec.Application,
+					labelDomain:                db.Spec.Domain,
+					"chorister.dev/managed-by": "chodatabase-controller",
+				},
+			},
+			"spec": map[string]interface{}{
+				"instances": int64(instances),
+				"postgres": map[string]interface{}{
+					"version": "16",
+					"flavor":  "vanilla",
+				},
+				"sgInstanceProfile": profileName,
+				"pods": map[string]interface{}{
+					"persistentVolume": map[string]interface{}{
+						"size": volumeSize,
+					},
+				},
+				"configurations": map[string]interface{}{
+					"sgPoolingConfig": "sgpoolingconfig1",
+					"backups": []interface{}{
+						map[string]interface{}{
+							"sgObjectStorage": "default-backup-storage",
+							"cronSchedule":    "0 3 * * *",
+							"retention":       int64(7),
+						},
+					},
+				},
+				"nonProductionOptions": map[string]interface{}{
+					"disableClusterPodAntiAffinity": !db.Spec.HA,
+				},
+			},
+		},
+	}
+	return sgCluster
+}
+
+// ensureSGInstanceProfile creates or updates a StackGres SGInstanceProfile.
+func (r *ChoDatabaseReconciler) ensureSGInstanceProfile(ctx context.Context, db *choristerv1alpha1.ChoDatabase, name string) error {
+	cpu, memory := dbProfileResources(db.Spec.Size)
+
+	desired := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "stackgres.io/v1",
+			"kind":       "SGInstanceProfile",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": db.Namespace,
+				"labels": map[string]interface{}{
+					labelApplication:           db.Spec.Application,
+					labelDomain:                db.Spec.Domain,
+					"chorister.dev/managed-by": "chodatabase-controller",
+				},
+			},
+			"spec": map[string]interface{}{
+				"cpu":    cpu,
+				"memory": memory,
+			},
+		},
+	}
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(sgInstanceProfileGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: db.Namespace}, existing)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, desired)
+	}
+	desired.SetResourceVersion(existing.GetResourceVersion())
+	return r.Update(ctx, desired)
+}
+
+// dbVolumeSize returns the PVC size for the given database sizing tier.
+func dbVolumeSize(size string) string {
+	switch size {
+	case "small":
+		return "10Gi"
+	case "medium":
+		return "50Gi"
+	case "large":
+		return "200Gi"
+	default:
+		return "10Gi"
+	}
+}
+
+// dbProfileResources returns (cpu, memory) for the given database sizing tier.
+func dbProfileResources(size string) (string, string) {
+	switch size {
+	case "small":
+		return "1", "2Gi"
+	case "medium":
+		return "2", "4Gi"
+	case "large":
+		return "4", "8Gi"
+	default:
+		return "1", "2Gi"
+	}
 }
 
 // hasOwnerRef checks if the object has an owner reference to the given owner.

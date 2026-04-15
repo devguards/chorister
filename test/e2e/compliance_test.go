@@ -23,6 +23,8 @@ import (
 	"context"
 	"testing"
 
+	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -73,9 +75,47 @@ func TestE2E_RegulatedCompliance(t *testing.T) {
 func TestE2E_IngressRequiresAuth(t *testing.T) {
 	feature := features.New("ingress requires auth").
 		Assess("internet ingress without auth is rejected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 10.3: ingress auth enforcement")
+			client := cfg.Client().Resources()
 
-			// Create ChoNetwork with ingress but no auth → validation rejected
+			// Create ChoNetwork with internet ingress but no auth — webhook should reject
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-auth-ingress-e2e",
+					Namespace: cfg.Namespace(),
+				},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						// No Auth — webhook should reject
+					},
+				},
+			}
+			err := client.Create(ctx, network)
+			if err == nil {
+				t.Fatal("expected webhook to reject ChoNetwork without auth for internet ingress")
+			}ould reject
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-auth-ingress-e2e",
+					Namespace: cfg.Namespace(),
+				},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						// No Auth — webhook should reject
+					},
+				},
+			}
+			err := client.Create(ctx, network)
+			if err == nil {
+				t.Fatal("expected webhook to reject ChoNetwork without auth for internet ingress")
+			}
 			return ctx
 		}).
 		Feature()

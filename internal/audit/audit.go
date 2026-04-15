@@ -76,6 +76,11 @@ func NewLokiLogger(endpoint string) *LokiLogger {
 	}
 }
 
+// Endpoint returns the Loki base URL.
+func (l *LokiLogger) Endpoint() string {
+	return l.endpoint
+}
+
 type lokiPushRequest struct {
 	Streams []lokiStream `json:"streams"`
 }

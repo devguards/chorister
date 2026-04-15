@@ -17,9 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -29,6 +33,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -38,6 +43,7 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/controller"
+	webhookv1alpha1 "github.com/chorister-dev/chorister/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -63,6 +69,8 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var controllerRevision string
+	var auditSink string
+	var lokiURL string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -83,6 +91,10 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&controllerRevision, "controller-revision", os.Getenv("CONTROLLER_REVISION"),
 		"Controller revision name for blue-green upgrades. Only reconciles matching namespaces.")
+	flag.StringVar(&auditSink, "audit-sink", "noop",
+		"Audit event sink: noop (discard), loki (send to Loki push API), or auto (detect from ChoCluster).")
+	flag.StringVar(&lokiURL, "loki-url", os.Getenv("LOKI_URL"),
+		"Loki base URL for audit logging (required when --audit-sink=loki).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -182,6 +194,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize audit logger based on --audit-sink flag.
+	// When audit-sink is "auto", detect Loki from ChoCluster observability config.
+	var auditLogger audit.Logger
+	switch auditSink {
+	case "loki":
+		if lokiURL == "" {
+			setupLog.Error(nil, "--loki-url is required when --audit-sink=loki")
+			os.Exit(1)
+		}
+		auditLogger = audit.NewLokiLogger(lokiURL)
+		setupLog.Info("Audit logging enabled", "sink", "loki", "url", lokiURL)
+	case "auto":
+		detectedURL := detectLokiURL(mgr.GetClient(), lokiURL)
+		if detectedURL != "" {
+			auditLogger = audit.NewLokiLogger(detectedURL)
+			setupLog.Info("Audit logging auto-detected", "sink", "loki", "url", detectedURL)
+		} else {
+			auditLogger = audit.NewNoopLogger()
+			setupLog.Info("Audit logging auto-detect: no ChoCluster observability found, using noop")
+		}
+	default:
+		auditLogger = audit.NewNoopLogger()
+		setupLog.Info("Audit logging disabled (noop)")
+	}
+
 	if err := (&controller.ChoApplicationReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -254,7 +291,7 @@ func main() {
 	if err := (&controller.ChoClusterReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		AuditLogger: audit.NewNoopLogger(),
+		AuditLogger: auditLogger,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoCluster")
 		os.Exit(1)
@@ -265,6 +302,20 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoSandbox")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupChoApplicationWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "ChoApplication")
+			os.Exit(1)
+		}
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupChoNetworkWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "ChoNetwork")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -277,9 +328,73 @@ func main() {
 		os.Exit(1)
 	}
 
+	// E.4: Add Loki health check when audit sink is loki
+	if lokiLogger, ok := auditLogger.(*audit.LokiLogger); ok {
+		if err := mgr.AddHealthzCheck("loki", lokiHealthCheck(lokiLogger.Endpoint())); err != nil {
+			setupLog.Error(err, "Failed to set up Loki health check")
+			os.Exit(1)
+		}
+	}
+
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
+	}
+}
+
+// detectLokiURL attempts to find the Loki URL from ChoCluster observability config.
+func detectLokiURL(c client.Reader, overrideURL string) string {
+	if overrideURL != "" {
+		return overrideURL
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	clusterList := &choristerv1alpha1.ChoClusterList{}
+	if err := c.List(ctx, clusterList); err != nil {
+		return ""
+	}
+
+	for _, cluster := range clusterList.Items {
+		// Skip if observability is explicitly disabled
+		if cluster.Spec.Observability != nil && cluster.Spec.Observability.Enabled != nil && !*cluster.Spec.Observability.Enabled {
+			continue
+		}
+
+		monNs := "cho-monitoring"
+		if cluster.Spec.Observability != nil && cluster.Spec.Observability.MonitoringNamespace != "" {
+			monNs = cluster.Spec.Observability.MonitoringNamespace
+		}
+
+		return fmt.Sprintf("http://loki.%s.svc.cluster.local:3100", monNs)
+	}
+
+	return ""
+}
+
+// lokiHealthCheck returns a healthz.Checker that verifies Loki connectivity.
+func lokiHealthCheck(endpoint string) healthz.Checker {
+	return func(_ *http.Request) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/ready", nil)
+		if err != nil {
+			return fmt.Errorf("loki health check request: %w", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("loki not reachable: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("loki returned status %d", resp.StatusCode)
+		}
+
+		return nil
 	}
 }

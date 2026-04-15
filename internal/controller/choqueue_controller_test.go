@@ -150,6 +150,13 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(sts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("nats:2-alpine"))
 
+			// Assert PVC-based storage (VolumeClaimTemplates, not EmptyDir)
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal("data"))
+			Expect(sts.Spec.VolumeClaimTemplates[0].Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
+			storageReq := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.String()).To(Equal("1Gi"))
+
 			// Assert headless Service created
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -162,6 +169,75 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "events-sts", Namespace: "default",
 			}, clientSvc)).To(Succeed())
+		})
+
+		It("should use custom storageSize for PVC", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "events-pvc-size", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					StorageSize: "10Gi",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: queue.Name, Namespace: queue.Namespace,
+			}, sts)).To(Succeed())
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			storageReq := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.String()).To(Equal("10Gi"))
+		})
+
+		It("should create ConfigMap when JetStream config is specified", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "events-js-config", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					JetStream: &choristerv1alpha1.JetStreamConfig{
+						MaxBytes:  "512Mi",
+						Retention: "interest",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert ConfigMap created for JetStream config
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "events-js-config-js-config", Namespace: "default",
+			}, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("jetstream.conf"))
+			Expect(cm.Data["jetstream.conf"]).To(ContainSubstring("max_mem_store: 512Mi"))
+
+			// Assert StatefulSet has config volume mount
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: queue.Name, Namespace: queue.Namespace,
+			}, sts)).To(Succeed())
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.Args).To(ContainElement("-c"))
+			Expect(container.Args).To(ContainElement("/etc/nats/jetstream.conf"))
+			Expect(container.VolumeMounts).To(HaveLen(2)) // data + js-config
 		})
 
 		It("should update status after reconciliation", func() {

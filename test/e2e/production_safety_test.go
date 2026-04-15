@@ -21,6 +21,8 @@ package e2e
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -34,10 +36,15 @@ import (
 func TestE2E_CannotApplyToProd(t *testing.T) {
 	feature := features.New("cannot apply to production").
 		Assess("chorister apply targeting production is rejected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 2: apply command enforcement + sandbox targeting")
-
-			// Run: chorister apply --domain payments --sandbox production
-			// Expect: exit code != 0, error contains "cannot apply to production"
+			// Run chorister apply without --sandbox flag (targeting production)
+			cmd := exec.CommandContext(ctx, "chorister", "apply", "--domain", "payments", "--file", "/dev/null")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("expected apply without --sandbox to fail")
+			}
+			if !strings.Contains(string(out), "--sandbox is required") {
+				t.Fatalf("expected sandbox-required error, got: %s", string(out))
+			}
 			return ctx
 		}).
 		Feature()

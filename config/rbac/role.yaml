@@ -181,6 +181,19 @@ rules:
   - update
   - watch
 - apiGroups:
+  - stackgres.io
+  resources:
+  - sgclusters
+  - sginstanceprofiles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - storage.k8s.io
   resources:
   - storageclasses

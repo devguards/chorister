@@ -58,6 +58,27 @@ spec:
               domain:
                 description: domain is the domain this queue belongs to.
                 type: string
+              jetStream:
+                description: jetStream configures NATS JetStream stream settings.
+                properties:
+                  maxAge:
+                    description: maxAge is the maximum age of messages (e.g. "24h",
+                      "7d"). Empty means no limit.
+                    type: string
+                  maxBytes:
+                    description: maxBytes is the maximum total bytes for the JetStream
+                      store (e.g. "512Mi", "1Gi").
+                    type: string
+                  retention:
+                    default: limits
+                    description: 'retention is the JetStream retention policy: limits,
+                      interest, or workqueue.'
+                    enum:
+                    - limits
+                    - interest
+                    - workqueue
+                    type: string
+                type: object
               resources:
                 description: resources defines explicit CPU/memory/storage (overrides
                   size template).
@@ -120,6 +141,11 @@ spec:
                 type: object
               size:
                 description: size references a sizing template from ChoCluster.
+                type: string
+              storageSize:
+                description: |-
+                  storageSize is the PVC size for NATS JetStream data durability (e.g. "5Gi").
+                  Defaults to "1Gi" if not specified.
                 type: string
               type:
                 default: nats

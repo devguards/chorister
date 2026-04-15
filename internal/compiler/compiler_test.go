@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -30,282 +29,8 @@ import (
 // 1A.1 — Compilation unit tests
 // ---------------------------------------------------------------------------
 
-// --- ChoCompute compilation ---
-
-func TestCompileCompute_DeploymentShape(t *testing.T) {
-	t.Skip("awaiting Phase 3: ChoCompute reconciler → Deployment + Service")
-
-	replicas := int32(3)
-	port := int32(8080)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/api:v1.2.3",
-			Variant:     "long-running",
-			Replicas:    &replicas,
-			Port:        &port,
-			Resources: &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("100m"),
-					corev1.ResourceMemory: resource.MustParse("128Mi"),
-				},
-			},
-		},
-	}
-
-	_ = compute
-	// TODO: Call compiler and assert:
-	// - Deployment name, namespace, labels (chorister.dev/application, chorister.dev/domain)
-	// - Container image, ports, resource requests
-	// - Service name, port, selector
-}
-
-func TestCompileCompute_JobVariant(t *testing.T) {
-	t.Skip("awaiting Phase 3.3: Compute variants — Job and CronJob")
-
-	replicas := int32(1)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "migrate", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/migrate:v1",
-			Variant:     "job",
-			Replicas:    &replicas,
-		},
-	}
-
-	_ = compute
-	// TODO: Assert Job manifest (not Deployment)
-}
-
-func TestCompileCompute_CronJobVariant(t *testing.T) {
-	t.Skip("awaiting Phase 3.3: Compute variants — Job and CronJob")
-
-	replicas := int32(1)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "cleanup", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/cleanup:v1",
-			Variant:     "cronjob",
-			Schedule:    "0 2 * * *",
-			Replicas:    &replicas,
-		},
-	}
-
-	_ = compute
-	// TODO: Assert CronJob with correct schedule field
-}
-
-func TestCompileCompute_GPUVariant(t *testing.T) {
-	t.Skip("awaiting Phase 3: ChoCompute reconciler with GPU support")
-
-	replicas := int32(1)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "training", Namespace: "myapp-ml"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "ml",
-			Image:       "myregistry/training:v1",
-			Variant:     "gpu",
-			Replicas:    &replicas,
-			GPU: &choristerv1alpha1.GPUSpec{
-				Count: 2,
-				Type:  "nvidia.com/gpu",
-			},
-		},
-	}
-
-	_ = compute
-	// TODO: Assert Deployment/Job with nvidia.com/gpu limits and expected labels
-}
-
-func TestCompileCompute_ScaleToZeroVariant(t *testing.T) {
-	t.Skip("awaiting scale-to-zero engine selection (future phase)")
-
-	// TODO: Assert scale-to-zero variant compiles to the selected engine contract
-}
-
-func TestCompileCompute_HPA(t *testing.T) {
-	t.Skip("awaiting Phase 3.2: HPA and PDB for compute")
-
-	replicas := int32(2)
-	targetCPU := int32(80)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/api:v1",
-			Replicas:    &replicas,
-			Autoscaling: &choristerv1alpha1.AutoscalingSpec{
-				MinReplicas:      2,
-				MaxReplicas:      10,
-				TargetCPUPercent: &targetCPU,
-			},
-		},
-	}
-
-	_ = compute
-	// TODO: Assert HPA manifest with correct min/max/target
-}
-
-func TestCompileCompute_PDB(t *testing.T) {
-	t.Skip("awaiting Phase 3.2: HPA and PDB for compute")
-
-	replicas := int32(3)
-	compute := &choristerv1alpha1.ChoCompute{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/api:v1",
-			Replicas:    &replicas,
-		},
-	}
-
-	_ = compute
-	// TODO: Assert PDB with minAvailable = replicas - 1 = 2
-}
-
-// --- ChoDatabase compilation ---
-
-func TestCompileDatabase_SGCluster(t *testing.T) {
-	t.Skip("awaiting Phase 4.2: ChoDatabase reconciler → SGCluster")
-
-	db := &choristerv1alpha1.ChoDatabase{
-		ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoDatabaseSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Engine:      "postgres",
-			Size:        "medium",
-			HA:          true,
-		},
-	}
-
-	_ = db
-	// TODO: Assert SGCluster fields, instance count >= 2 for ha=true
-}
-
-func TestCompileDatabase_Credentials(t *testing.T) {
-	t.Skip("awaiting Phase 4.3: Database secret wiring")
-
-	db := &choristerv1alpha1.ChoDatabase{
-		ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoDatabaseSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Engine:      "postgres",
-			Size:        "small",
-		},
-	}
-
-	_ = db
-	// TODO: Assert credential Secret with expected keys: host, port, username, password, uri
-	// Secret name follows: {domain}--database--{name}-credentials
-}
-
-// --- ChoQueue compilation ---
-
-func TestCompileQueue_NATSResources(t *testing.T) {
-	t.Skip("awaiting Phase 5.2: ChoQueue reconciler → NATS JetStream")
-
-	queue := &choristerv1alpha1.ChoQueue{
-		ObjectMeta: metav1.ObjectMeta{Name: "events", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoQueueSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Type:        "nats",
-			Size:        "small",
-		},
-	}
-
-	_ = queue
-	// TODO: Assert NATS JetStream manifests
-}
-
-// --- ChoCache compilation ---
-
-func TestCompileCache_Dragonfly(t *testing.T) {
-	t.Skip("awaiting Phase 5.3: ChoCache reconciler → Dragonfly")
-
-	cache := &choristerv1alpha1.ChoCache{
-		ObjectMeta: metav1.ObjectMeta{Name: "sessions", Namespace: "myapp-auth"},
-		Spec: choristerv1alpha1.ChoCacheSpec{
-			Application: "myapp",
-			Domain:      "auth",
-			Size:        "medium",
-		},
-	}
-
-	_ = cache
-	// TODO: Assert Dragonfly Deployment+Service, size→resource mapping
-}
-
-// --- ChoStorage compilation ---
-
-func TestCompileStorage_ObjectBackend(t *testing.T) {
-	t.Skip("awaiting Phase 3+: ChoStorage compilation")
-
-	size := resource.MustParse("50Gi")
-	storage := &choristerv1alpha1.ChoStorage{
-		ObjectMeta: metav1.ObjectMeta{Name: "uploads", Namespace: "myapp-media"},
-		Spec: choristerv1alpha1.ChoStorageSpec{
-			Application:   "myapp",
-			Domain:        "media",
-			Variant:       "object",
-			Size:          &size,
-			ObjectBackend: "s3",
-		},
-	}
-
-	_ = storage
-	// TODO: Assert provider binding/manifests for S3 backend
-}
-
-func TestCompileStorage_BlockPVC(t *testing.T) {
-	t.Skip("awaiting Phase 3+: ChoStorage compilation")
-
-	size := resource.MustParse("20Gi")
-	storage := &choristerv1alpha1.ChoStorage{
-		ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: "myapp-payments"},
-		Spec: choristerv1alpha1.ChoStorageSpec{
-			Application:  "myapp",
-			Domain:       "payments",
-			Variant:      "block",
-			Size:         &size,
-			AccessMode:   "ReadWriteOnce",
-			StorageClass: "encrypted-ssd",
-		},
-	}
-
-	_ = storage
-	// TODO: Assert PVC with expected class, size, and access mode
-}
-
-func TestCompileStorage_FilePVC(t *testing.T) {
-	t.Skip("awaiting Phase 3+: ChoStorage compilation")
-
-	size := resource.MustParse("100Gi")
-	storage := &choristerv1alpha1.ChoStorage{
-		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "myapp-media"},
-		Spec: choristerv1alpha1.ChoStorageSpec{
-			Application: "myapp",
-			Domain:      "media",
-			Variant:     "file",
-			Size:        &size,
-			AccessMode:  "ReadWriteMany",
-		},
-	}
-
-	_ = storage
-	// TODO: Assert RWX-capable PVC or storage-class specific manifest
-}
+// Skipped compiler tests for compute, database, queue, cache, and storage PVC
+// were removed — those resources are handled by direct reconcilers, not the compiler.
 
 // --- ChoNetwork compilation ---
 
@@ -414,65 +139,6 @@ func TestCompileNetwork_CrossApplicationLink(t *testing.T) {
 		t.Fatal("expected direct deny policy to be named")
 	}
 }
-
-// --- Table-driven edge cases ---
-
-func TestCompileCompute_EdgeCases(t *testing.T) {
-	t.Skip("awaiting Phase 3: ChoCompute reconciler")
-
-	tests := []struct {
-		name    string
-		spec    choristerv1alpha1.ChoComputeSpec
-		wantErr bool
-	}{
-		{
-			name: "zero replicas",
-			spec: choristerv1alpha1.ChoComputeSpec{
-				Application: "myapp",
-				Domain:      "payments",
-				Image:       "myregistry/api:v1",
-				Replicas:    int32Ptr(0),
-			},
-			wantErr: true,
-		},
-		{
-			name: "empty image",
-			spec: choristerv1alpha1.ChoComputeSpec{
-				Application: "myapp",
-				Domain:      "payments",
-				Image:       "",
-				Replicas:    int32Ptr(1),
-			},
-			wantErr: true,
-		},
-		{
-			name: "missing required fields",
-			spec: choristerv1alpha1.ChoComputeSpec{
-				Image: "myregistry/api:v1",
-			},
-			wantErr: true,
-		},
-		{
-			name: "cronjob without schedule",
-			spec: choristerv1alpha1.ChoComputeSpec{
-				Application: "myapp",
-				Domain:      "payments",
-				Image:       "myregistry/api:v1",
-				Variant:     "cronjob",
-				Replicas:    int32Ptr(1),
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_ = tt // TODO: Call compiler, check for expected error
-		})
-	}
-}
-
-func int32Ptr(v int32) *int32 { return &v }
 
 func getSpec(t *testing.T, obj *unstructured.Unstructured) map[string]interface{} {
 	t.Helper()
@@ -706,5 +372,127 @@ func TestCompileCiliumEncryptionPolicy(t *testing.T) {
 	egressAuth, ok := egressRule["authentication"].(map[string]interface{})
 	if !ok || egressAuth["mode"] != "required" {
 		t.Error("expected authentication mode=required in egress")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// H.2 / H.3 — Object storage kro RGD compilation
+// ---------------------------------------------------------------------------
+
+func TestCompileObjectStorageRGD_S3(t *testing.T) {
+	size := resource.MustParse("50Gi")
+	storage := &choristerv1alpha1.ChoStorage{
+		ObjectMeta: metav1.ObjectMeta{Name: "media-bucket", Namespace: "myapp-media"},
+		Spec: choristerv1alpha1.ChoStorageSpec{
+			Application:   "myapp",
+			Domain:        "media",
+			Variant:       "object",
+			ObjectBackend: "s3",
+			Size:          &size,
+		},
+	}
+
+	rgd := CompileObjectStorageRGD(storage)
+	if rgd == nil {
+		t.Fatal("expected non-nil RGD")
+	}
+
+	if rgd.GetKind() != "ResourceGraphDefinition" {
+		t.Errorf("expected kind ResourceGraphDefinition, got %s", rgd.GetKind())
+	}
+	if rgd.GroupVersionKind().Group != "kro.run" {
+		t.Errorf("expected group kro.run, got %s", rgd.GroupVersionKind().Group)
+	}
+	if rgd.GetName() != "media-bucket-object-storage" {
+		t.Errorf("expected name media-bucket-object-storage, got %s", rgd.GetName())
+	}
+	if rgd.GetNamespace() != "myapp-media" {
+		t.Errorf("expected namespace myapp-media, got %s", rgd.GetNamespace())
+	}
+
+	labels := rgd.GetLabels()
+	if labels["chorister.dev/application"] != "myapp" {
+		t.Errorf("expected application label myapp, got %s", labels["chorister.dev/application"])
+	}
+	if labels["chorister.dev/variant"] != "object" {
+		t.Errorf("expected variant label object, got %s", labels["chorister.dev/variant"])
+	}
+
+	spec := getSpec(t, rgd)
+	schemaField, ok := spec["schema"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected schema field in spec")
+	}
+	if schemaField["kind"] != "ObjectStorageClaim" {
+		t.Errorf("expected schema kind ObjectStorageClaim, got %v", schemaField["kind"])
+	}
+
+	schemaSpec, ok := schemaField["spec"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected spec in schema")
+	}
+	if schemaSpec["backend"] != "s3" {
+		t.Errorf("expected backend s3, got %v", schemaSpec["backend"])
+	}
+	if schemaSpec["size"] != "50Gi" {
+		t.Errorf("expected size 50Gi, got %v", schemaSpec["size"])
+	}
+
+	resources, ok := spec["resources"].([]interface{})
+	if !ok || len(resources) != 1 {
+		t.Fatalf("expected 1 resource, got %v", spec["resources"])
+	}
+	res := resources[0].(map[string]interface{})
+	if res["id"] != "bucket" {
+		t.Errorf("expected resource id bucket, got %v", res["id"])
+	}
+	tmpl := res["template"].(map[string]interface{})
+	if tmpl["apiVersion"] != "s3.aws.upbound.io/v1beta1" {
+		t.Errorf("expected s3 apiVersion, got %v", tmpl["apiVersion"])
+	}
+	if tmpl["kind"] != "Bucket" {
+		t.Errorf("expected Bucket kind, got %v", tmpl["kind"])
+	}
+}
+
+func TestCompileObjectStorageRGD_GCS(t *testing.T) {
+	size := resource.MustParse("100Gi")
+	storage := &choristerv1alpha1.ChoStorage{
+		ObjectMeta: metav1.ObjectMeta{Name: "assets-bucket", Namespace: "myapp-assets"},
+		Spec: choristerv1alpha1.ChoStorageSpec{
+			Application:   "myapp",
+			Domain:        "assets",
+			Variant:       "object",
+			ObjectBackend: "gcs",
+			Size:          &size,
+		},
+	}
+
+	rgd := CompileObjectStorageRGD(storage)
+	spec := getSpec(t, rgd)
+	resources := spec["resources"].([]interface{})
+	tmpl := resources[0].(map[string]interface{})["template"].(map[string]interface{})
+	if tmpl["apiVersion"] != "storage.gcp.upbound.io/v1beta1" {
+		t.Errorf("expected gcs apiVersion, got %v", tmpl["apiVersion"])
+	}
+}
+
+func TestCompileObjectStorageRGD_DefaultSize(t *testing.T) {
+	storage := &choristerv1alpha1.ChoStorage{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-size", Namespace: "myapp-data"},
+		Spec: choristerv1alpha1.ChoStorageSpec{
+			Application:   "myapp",
+			Domain:        "data",
+			Variant:       "object",
+			ObjectBackend: "s3",
+			// Size is nil — should default to 10Gi
+		},
+	}
+
+	rgd := CompileObjectStorageRGD(storage)
+	spec := getSpec(t, rgd)
+	schemaSpec := spec["schema"].(map[string]interface{})["spec"].(map[string]interface{})
+	if schemaSpec["size"] != "10Gi" {
+		t.Errorf("expected default size 10Gi, got %v", schemaSpec["size"])
 	}
 }

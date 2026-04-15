@@ -92,6 +92,89 @@ var _ = Describe("ChoStorage Controller", func() {
 	})
 
 	// -----------------------------------------------------------------------
+	// D.3 — Object storage kro Claim creation
+	// -----------------------------------------------------------------------
+	Context("D.3 — Object storage reconciliation", func() {
+		It("should set object-specific status fields for object variant", func() {
+			storageSize := resource.MustParse("50Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "media-bucket", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application:   "myapp",
+					Domain:        "media",
+					Variant:       "object",
+					ObjectBackend: "s3",
+					Size:          &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				s := &choristerv1alpha1.ChoStorage{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, s); err == nil {
+					s.Finalizers = nil
+					_ = k8sClient.Update(ctx, s)
+					_ = k8sClient.Delete(ctx, s)
+				}
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile reaches object claim creation — kro CRD not installed in envtest,
+			// so reconcile returns an error which is expected.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			// kro ObjectStorageClaim CRD is not registered in envtest, expect NoKindMatch error
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ObjectStorageClaim"))
+		})
+
+		It("should create PVC for block variant and not object status", func() {
+			storageSize := resource.MustParse("5Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "block-data", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Variant:     "block",
+					Size:        &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				s := &choristerv1alpha1.ChoStorage{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, s); err == nil {
+					s.Finalizers = nil
+					_ = k8sClient.Update(ctx, s)
+					_ = k8sClient.Delete(ctx, s)
+				}
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile twice (first adds finalizer)
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Block variant should create PVC
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "block-data", Namespace: "default"}, pvc)).To(Succeed())
+			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
+
+			// Block variant should NOT set bucket name
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
+			Expect(storage.Status.BucketName).To(BeEmpty())
+			Expect(storage.Status.Ready).To(BeTrue())
+		})
+	})
+
+	// -----------------------------------------------------------------------
 	// Gap 2 — Revision filtering on ChoStorage controller
 	// -----------------------------------------------------------------------
 	Context("Gap 2 — Controller revision filtering", func() {

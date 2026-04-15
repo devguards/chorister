@@ -769,4 +769,59 @@ var _ = Describe("ChoApplication Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Not-found handling
+	// -----------------------------------------------------------------------
+	Context("Not-found handling", func() {
+		It("should return nil when ChoApplication does not exist", func() {
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "nonexistent-app", Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Owner reference tests
+	// -----------------------------------------------------------------------
+	Context("Owner references", func() {
+		It("should set owner reference on namespace", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "owner-ref-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "web",
+							Sensitivity: "public",
+							Supplies:    &choristerv1alpha1.SupplySpec{Port: 8080, Services: []string{"http"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify app has finalizer set
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(app, applicationFinalizerName)).To(BeTrue())
+		})
+	})
 })

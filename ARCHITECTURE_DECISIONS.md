@@ -4,7 +4,7 @@ Foundational design choices for chorister — an opinionated infrastructure plat
 
 Unless marked as deferred or MVP-only, this document describes the target end-state architecture. It is the canonical source for command semantics and production safety guarantees.
 
-**Core invariant: chorister is a K8s operator.** Users submit DSL as CRDs (or via CLI). The chorister controller compiles DSL → kro ResourceGraphDefinitions + K8s manifests, and reconciles them on-cluster. kro handles composition. K8s is the control plane. etcd is the state store. The CLI is a thin client — it creates/updates CRDs and watches status.
+**Core invariant: chorister is a K8s operator.** Users submit DSL as CRDs (or via CLI). The chorister controller reconciles CRDs directly into K8s-native resources, operator CRDs (StackGres, Cilium, cert-manager, etc.), and — only for cloud resources like object storage — kro ResourceGraphDefinitions. K8s is the control plane. etcd is the state store. The CLI is a thin client — it creates/updates CRDs and watches status.
 
 ---
 
@@ -53,33 +53,33 @@ Unless marked as deferred or MVP-only, this document describes the target end-st
 │  K8s Cluster                                               │
 │                                                            │
 │  chorister controller (runs on cluster)                    │
-│       │  • Compiles DSL → kro RGDs + K8s manifests          │
+│       │  • Reconciles CRDs → K8s resources directly         │
 │       │  • Validates & enforces compliance guardrails        │
 │       │  • Reconciles ChoDomainMembership → RoleBindings     │
 │       │  • Reconciles ChoPromotionRequest → approval gates   │
-│       ▼                                                    │
-│  kro ─── composition (dependency ordering, status agg)     │
-│       ▼                                                    │
-│  Operators ── StackGres, NATS, Dragonfly                   │
-│  K8s ── Deployment, Service, NetworkPolicy                 │
+│       │                                                     │
+│       ├──► K8s native ── Deployment, Service, NetworkPolicy │
+│       ├──► Operators ── StackGres, Cilium, cert-manager     │
+│       └──► kro ── cloud resources only (object storage)     │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ### What chorister does NOT build
 
-- ❌ Composition engine (kro), cloud resource management (operators), state store (etcd/K8s)
+- ❌ Cloud resource provisioning APIs (delegated to kro/Crossplane for object storage, etc.)
 - ❌ Auth server (OIDC IdPs), security scanners (OPA/Trivy), CI/CD, observability UI (Grafana)
 
 ### Deployment model
 
 Two components:
 
-1. **chorister controller** — Deployment in `cho-system`. Watches CRDs, compiles, reconciles. Bootstraps the rest of the stack (kro, operators, observability) via `ChoCluster` CRD reconciliation.
+1. **chorister controller** — Deployment in `cho-system`. Watches CRDs, reconciles them directly into K8s resources and operator CRDs. For cloud resources (object storage), delegates to kro/Crossplane. Bootstraps the rest of the stack (operators, observability) via `ChoCluster` CRD reconciliation.
 2. **chorister CLI** — thin client. Creates CRDs, watches status. No compilation logic.
 
 ```bash
 $ chorister setup   # installs ONLY: controller + CRDs into cho-system
-                    # controller reads ChoCluster CRD → installs kro, operators, LGTM stack
+                    # controller reads ChoCluster CRD → installs operators, LGTM stack
+                    # kro/Crossplane installed only if object storage is configured
 ```
 
 Why the controller bootstraps the stack (not the CLI):
@@ -341,7 +341,7 @@ Opinionated choices — one per category, no menu:
 
 | Category | Tool | Role |
 |---|---|---|
-| Composition | kro | K8s resource composition with dependency ordering and status aggregation |
+| Cloud resource composition | kro (or Crossplane) | Cloud-only: object storage provisioning via cloud APIs. Not used for K8s-native or operator-managed resources. |
 | PostgreSQL | StackGres | HA via Patroni, PgBouncer pooling, automated backups |
 | Queues (standard) | NATS JetStream | Pub/sub, task queues, at-least-once delivery |
 | Queues (streaming) | AutoMQ (Strimzi fallback) | Kafka-compatible, S3/GCS-backed |
@@ -352,7 +352,28 @@ Opinionated choices — one per category, no menu:
 | Runtime detection | Tetragon | eBPF syscall monitoring, file integrity (opt-in per compliance profile) |
 | Observability | Grafana LGTM | Alloy + Mimir + Loki + Tempo → all on object storage |
 
-`chorister setup` installs the controller. The controller reconciles `ChoCluster` to install everything else. If someone deletes an operator, the controller reinstalls it.
+`chorister setup` installs the controller. The controller reconciles `ChoCluster` to install operators and the observability stack. If someone deletes an operator, the controller reinstalls it.
+
+### Direct reconcilers vs kro delegation
+
+The controller uses **two reconciliation strategies** based on whether the target is reachable via the K8s API:
+
+| Resource | Strategy | Why |
+|---|---|---|
+| Deployment, Service, Job, CronJob, HPA, PDB | Direct reconciler | Native K8s resources — no indirection needed |
+| StackGres SGCluster, SGPoolingConfig, SGBackupConfig | Direct reconciler | Operator CRDs — K8s API reachable |
+| NATS StatefulSet/operator CRDs | Direct reconciler | K8s API reachable |
+| Dragonfly Deployment | Direct reconciler | K8s API reachable |
+| NetworkPolicy, CiliumNetworkPolicy, CiliumEnvoyConfig | Direct reconciler | K8s API reachable |
+| Gateway API HTTPRoute, ReferenceGrant | Direct reconciler | K8s API reachable |
+| cert-manager Certificate | Direct reconciler | K8s API reachable |
+| Tetragon TracingPolicy | Direct reconciler | K8s API reachable |
+| RBAC RoleBindings | Direct reconciler | K8s API reachable |
+| **Object storage (S3/GCS/Azure Blob)** | **kro / Crossplane** | **Requires cloud provider APIs — controller should not embed cloud SDKs** |
+
+**Decision boundary:** "Can the controller create this resource with a K8s API client?" Yes → direct reconciler. No (requires cloud provider API) → delegate to kro/Crossplane.
+
+This keeps the controller free of cloud SDK dependencies while still managing the full stack. If a team needs a cloud-managed database (Cloud SQL, RDS), they provision it outside chorister.
 
 ---
 
@@ -360,10 +381,9 @@ Opinionated choices — one per category, no menu:
 
 ```
 CLI creates/updates CRDs (desired state in etcd)
-  → controller watches, compiles, validates
-    → creates kro RGDs + K8s manifests
-      → kro reconciles compositions
-        → operators reconcile domain resources
+  → controller watches, validates, reconciles
+    → creates K8s resources directly (Deployments, Services, operator CRDs, etc.)
+    → for cloud resources only: creates kro RGDs (object storage provisioning)
   → controller writes audit event to Loki (synchronous)
   → controller updates CRD .status (CLI watches via K8s Watch API)
 ```
@@ -371,30 +391,33 @@ CLI creates/updates CRDs (desired state in etcd)
 | Aspect | Handled by |
 |---|---|
 | Desired state | etcd (K8s CRDs) |
-| Composition | kro (dependency ordering, status aggregation) |
-| Domain resources | K8s operators (StackGres, NATS, etc.) |
+| K8s-native resources | chorister controller (direct reconciliation) |
+| Operator-managed resources | chorister controller → operator CRDs (StackGres, Cilium, etc.) |
+| Cloud resources | kro/Crossplane (object storage, container registry) |
 | Watch/notify | K8s informers (HTTP/2 streaming, millisecond propagation) |
 
-**Why kro:** real K8s informers (not polling), CEL for wiring between resources, if kro dies we can swap compilation target without changing DSL.
+**Why direct reconcilers for most resources:** The controller already has a K8s client. Creating a Deployment or an SGCluster via the K8s API is a single API call. Routing through kro RGDs adds indirection (RGD → kro reconciler → K8s API) with no functional benefit for resources the controller can manage directly. Direct reconcilers are simpler to debug, test, and reason about.
 
-**Rejected:** own state file (Terraform's worst parts), cloud APIs as source of truth (slow, no diffs), custom composition controller (kro already handles this).
+**Why kro/Crossplane for cloud resources:** Object storage (S3/GCS/Azure Blob) requires cloud provider APIs. Embedding AWS/GCP/Azure SDKs in the controller would bloat the binary, add authentication complexity, and create a maintenance burden across provider versions. kro or Crossplane already solve this with provider plugins.
+
+**Rejected:** kro for all resources (unnecessary indirection for K8s-native resources), own state file (Terraform's worst parts), cloud APIs as source of truth (slow, no diffs).
 
 ---
 
 ## 6. Blueprint Artifact Format
 
-The controller compiles each domain into K8s-manifest-shaped YAML applied directly to the cluster:
+The controller reconciles each domain’s CRDs into K8s resources applied directly to the cluster. For cloud resources, kro RGDs are used:
 
 ```
-kro/
-  rgd-compute-api.yaml           # kro ResourceGraphDefinition
-  rgd-database-main.yaml
-instances/
-  chocompute-api.yaml             # kro instance
-  chodatabase-main.yaml
-k8s/
+k8s/                                  # direct reconciler output
   namespace.yaml
   networkpolicy.yaml
+  deployment-api.yaml
+  service-api.yaml
+  sgcluster-main.yaml                 # StackGres operator CRD
+  ciliumnetworkpolicy-egress.yaml
+kro/                                  # cloud resources only
+  rgd-storage-uploads.yaml            # kro RGD for object storage
 ```
 
 All standard K8s manifests: `kubectl get` works, compiled state visible in CRD `.status`, exportable for GitOps via `chorister export`.
@@ -672,7 +695,7 @@ All backends share one object storage bucket. Default retention: 30d metrics, 14
 
 ## 14. Real-time Feedback
 
-kro uses real K8s informers (HTTP/2 streaming, not polling). Status changes propagate in milliseconds:
+kro uses real K8s informers (HTTP/2 streaming, not polling) for cloud resources it manages. For directly-reconciled resources, the controller uses its own informers. Status changes propagate in milliseconds:
 
 ```
 Operator updates resource.status = "Ready"
@@ -762,10 +785,10 @@ WEEK 1:
 ├── Decide: YAML vs CUE, Scale-to-zero engine
 ├── Define: chorister CRDs
 ├── Scaffold: Go project, controller, CLI skeleton
-└── Setup: dev K8s cluster with kro + StackGres + NATS + OIDC
+└── Setup: dev K8s cluster with StackGres + NATS + OIDC
 
 WEEK 2:
-├── Build: Controller core (watch CRDs, compile, apply kro RGDs)
+├── Build: Controller core (watch CRDs, reconcile directly)
 ├── Build: K8s provider (compute → Deployment + Service + HPA)
 ├── Build: Controller audit (Loki writes on every reconciliation)
 ├── Build: CLI thin client (CRD CRUD + Watch API → TUI)
@@ -776,7 +799,7 @@ WEEK 3-4:
 ├── Build: database provider (→ StackGres)
 ├── Build: queue provider (→ NATS)
 ├── Build: network resource (→ NetworkPolicy + HTTPRoute + CiliumNetworkPolicy)
-├── Build: kro RGD wiring (CEL expressions)
+├── Build: Object storage → kro/Crossplane RGDs
 └── Test: compute + database + network → working app
 
 WEEK 5-6:
@@ -1059,12 +1082,12 @@ chorister ships sensible defaults in the CRD (matching the `small` tier above). 
 | # | Decision | Choice |
 |---|---|---|
 | 1 | Platform target | K8s-only. Exceptions: object storage, container registry. |
-| 2 | Architecture | K8s operator. Controller compiles/validates/enforces. CLI is thin (CRD CRUD + watch). |
-| 3 | State | K8s as control plane. etcd for state, kro for composition, operators for resources. |
+| 2 | Architecture | K8s operator. Controller reconciles CRDs directly into K8s resources. CLI is thin (CRD CRUD + watch). |
+| 3 | State | K8s as control plane. etcd for state, direct reconcilers for K8s-reachable resources, kro/Crossplane for cloud resources only. |
 | 4 | Hierarchy | Organization → Application → Domain → Components. Domain = DDD bounded context = namespace. |
 | 5 | Resource types | 6: compute, database, queue, storage, cache, network. K8s manifests only. |
 | 6 | DSL format | Not finalized yet. CUE or YAML for initial implementation; examples are illustrative only. |
-| 7 | Blueprint | K8s-manifest-shaped YAML (kro RGDs + operator CRDs). Exportable for GitOps. |
+| 7 | Blueprint | K8s manifests (direct reconciler output) + kro RGDs for cloud resources only. Exportable for GitOps. |
 | 8 | Network | 3-zone trust. Intra-domain=free. Cross-domain=consumes/supplies. Internet=JWT. Cross-app=Gateway API. |
 | 9 | Identity | OIDC + ChoDomainMembership → K8s RoleBindings. No user database. |
 | 10 | Audit | Controller writes to Loki (synchronous) + K8s audit log. Tamper-proof. |

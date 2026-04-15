@@ -80,6 +80,18 @@ type ChoStorageStatus struct {
 	// compiledWithRevision is the controller revision that compiled this resource.
 	// +optional
 	CompiledWithRevision string `json:"compiledWithRevision,omitempty"`
+
+	// endpoint is the object storage endpoint URL (for object variant).
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// bucketName is the provisioned bucket name (for object variant).
+	// +optional
+	BucketName string `json:"bucketName,omitempty"`
+
+	// credentialsSecretRef is the name of the Secret containing access credentials (for object variant).
+	// +optional
+	CredentialsSecretRef string `json:"credentialsSecretRef,omitempty"`
 }
 
 // +kubebuilder:object:root=true

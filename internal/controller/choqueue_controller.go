@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -252,6 +253,55 @@ func (r *ChoQueueReconciler) reconcileStatefulSet(ctx context.Context, queue *ch
 	resources := queueResources(queue)
 	replicas := int32(1)
 
+	// Build NATS args: enable JetStream with persistent data directory.
+	natsArgs := []string{"-js", "-sd", "/data"}
+
+	// Build JetStream config file content if custom settings are provided.
+	var configVolumeSource *corev1.VolumeSource
+	var configVolumeMount *corev1.VolumeMount
+	if queue.Spec.JetStream != nil {
+		jsConfig := buildJetStreamConfig(queue.Spec.JetStream)
+		if jsConfig != "" {
+			natsArgs = append(natsArgs, "-c", "/etc/nats/jetstream.conf")
+			configVolumeSource = &corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: queue.Name + "-js-config",
+					},
+				},
+			}
+			configVolumeMount = &corev1.VolumeMount{
+				Name: "js-config", MountPath: "/etc/nats",
+			}
+			// Ensure the ConfigMap exists.
+			if err := r.ensureJetStreamConfigMap(ctx, queue, jsConfig); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Calculate PVC storage size — default 1Gi.
+	storageSize := "1Gi"
+	if queue.Spec.StorageSize != "" {
+		storageSize = queue.Spec.StorageSize
+	}
+	storageParsed := resource.MustParse(storageSize)
+
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: "/data"},
+	}
+	if configVolumeMount != nil {
+		volumeMounts = append(volumeMounts, *configVolumeMount)
+	}
+
+	volumes := []corev1.Volume{}
+	if configVolumeSource != nil {
+		volumes = append(volumes, corev1.Volume{
+			Name:         "js-config",
+			VolumeSource: *configVolumeSource,
+		})
+	}
+
 	desired := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      queue.Name,
@@ -271,23 +321,30 @@ func (r *ChoQueueReconciler) reconcileStatefulSet(ctx context.Context, queue *ch
 						{
 							Name:      "nats",
 							Image:     "nats:2-alpine",
-							Args:      []string{"-js", "-sd", "/data"},
+							Args:      natsArgs,
 							Resources: resources,
 							Ports: []corev1.ContainerPort{
 								{Name: "client", ContainerPort: 4222, Protocol: corev1.ProtocolTCP},
 								{Name: "cluster", ContainerPort: 6222, Protocol: corev1.ProtocolTCP},
 								{Name: "monitor", ContainerPort: 8222, Protocol: corev1.ProtocolTCP},
 							},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "data", MountPath: "/data"},
-							},
+							VolumeMounts: volumeMounts,
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "data",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
+					Volumes: volumes,
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "data",
+						Labels: labels,
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: storageParsed,
 							},
 						},
 					},
@@ -312,6 +369,50 @@ func (r *ChoQueueReconciler) reconcileStatefulSet(ctx context.Context, queue *ch
 		!equality.Semantic.DeepEqual(existing.Spec.Replicas, desired.Spec.Replicas) {
 		existing.Spec.Template = desired.Spec.Template
 		existing.Spec.Replicas = desired.Spec.Replicas
+		return r.Update(ctx, existing)
+	}
+	return nil
+}
+
+// buildJetStreamConfig generates a NATS JetStream configuration snippet.
+func buildJetStreamConfig(js *choristerv1alpha1.JetStreamConfig) string {
+	if js == nil {
+		return ""
+	}
+	lines := []string{"jetstream {", "  store_dir: /data"}
+	if js.MaxBytes != "" {
+		lines = append(lines, fmt.Sprintf("  max_mem_store: %s", js.MaxBytes))
+	}
+	lines = append(lines, "}")
+	return strings.Join(lines, "\n")
+}
+
+// ensureJetStreamConfigMap creates or updates the ConfigMap for JetStream configuration.
+func (r *ChoQueueReconciler) ensureJetStreamConfigMap(ctx context.Context, queue *choristerv1alpha1.ChoQueue, config string) error {
+	cmName := queue.Name + "-js-config"
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: queue.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cmName,
+				Namespace: queue.Namespace,
+				Labels:    queueLabels(queue),
+			},
+			Data: map[string]string{
+				"jetstream.conf": config,
+			},
+		}
+		if setErr := controllerutil.SetControllerReference(queue, cm, r.Scheme); setErr != nil {
+			return setErr
+		}
+		return r.Create(ctx, cm)
+	}
+	if err != nil {
+		return err
+	}
+	if existing.Data["jetstream.conf"] != config {
+		existing.Data["jetstream.conf"] = config
 		return r.Update(ctx, existing)
 	}
 	return nil
@@ -463,6 +564,7 @@ func (r *ChoQueueReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
+		Owns(&corev1.ConfigMap{}).
 		Named("choqueue").
 		Complete(r)
 }

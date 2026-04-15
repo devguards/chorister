@@ -189,12 +189,12 @@ Cloud-native exceptions are limited to object storage (S3/GCS/Azure Blob) and co
 │  K8s Cluster                                             │
 │                                                          │
 │  chorister controller                                    │
-│    • Compiles DSL → kro RGDs + K8s manifests             │
+│    • Reconciles CRDs → K8s resources directly             │
 │    • Validates & enforces compliance guardrails           │
 │    • Reconciles memberships → RoleBindings                │
 │    • Reconciles promotions → approval gates               │
 │                                                          │
-│  kro         → composition (dependency ordering)         │
+│  K8s native  → Deployment, Service, NetworkPolicy, RBAC  │
 │  StackGres   → PostgreSQL (Patroni HA, PgBouncer)        │
 │  NATS        → queues (JetStream)                        │
 │  Dragonfly   → cache (Redis-compatible)                  │
@@ -230,6 +230,37 @@ chorister diff payments --sandbox alice
 
 # Promote to production (requires approval)
 chorister promote payments --sandbox alice
+```
+
+---
+
+## Audit Logging
+
+The controller supports structured audit logging to [Loki](https://grafana.com/oss/loki/). Audit events are emitted synchronously — if the audit sink fails, reconciliation is blocked to prevent unaudited changes.
+
+### Configuration
+
+| Flag | Default | Description |
+|---|---|---|
+| `--audit-sink` | `noop` | Audit sink: `noop` (discard), `loki` (push to Loki), or `auto` (detect from ChoCluster) |
+| `--loki-url` | `$LOKI_URL` | Loki base URL (required when `--audit-sink=loki`) |
+
+### Auto-detection
+
+When `--audit-sink=auto`, the controller reads the `ChoCluster` resource. If observability is enabled (the default), it automatically targets `http://loki.<monitoring-namespace>.svc.cluster.local:3100`. No manual URL configuration needed.
+
+### Health check
+
+When Loki is configured, the controller registers a `/healthz/loki` endpoint that verifies Loki connectivity. If Loki becomes unreachable, the health check fails and Kubernetes can restart the controller pod.
+
+### Examples
+
+```bash
+# Explicit Loki endpoint
+manager --audit-sink=loki --loki-url=http://loki.cho-monitoring.svc.cluster.local:3100
+
+# Auto-detect from ChoCluster observability config
+manager --audit-sink=auto
 ```
 
 ---

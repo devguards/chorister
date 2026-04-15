@@ -8,6 +8,8 @@ Implementation checklist for chorister. Each step is designed to be:
 
 This document is the implementation sequence, not the product contract. README and architecture describe the target end-state; this roadmap calls out MVP slices explicitly.
 
+> **Note on checkboxes:** `[x]` means "scaffolded — types, reconciler stubs, and basic happy-path logic are in place." It does **not** mean every sub-feature is production-complete. See `ACTION_PLAN.md` for remaining gaps in each area.
+
 ---
 
 ## Testing setup
@@ -328,7 +330,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 - [x] **3.1 — ChoCompute reconciler → Deployment + Service**
   - Watch `ChoCompute` CRD
-  - Compile to: kro RGD + instance that render Deployment (with resource requests/limits, liveness/readiness probes placeholder) and Service (ClusterIP)
+  - Compile to: Deployment (with resource requests/limits, liveness/readiness probes placeholder) and Service (ClusterIP) via direct reconciler
   - Apply in target namespace
   - Update `.status` with ready replica count
   - **Test:** create `ChoCompute` → assert Deployment and Service exist → wait for pods Ready → check `.status.ready == true`
@@ -354,7 +356,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 - [x] **4.2 — ChoDatabase reconciler → SGCluster**
   - Watch `ChoDatabase` CRD
-  - Compile to: kro RGD + instance that render SGCluster + SGPoolingConfig (PgBouncer) + SGBackupConfig
+  - Compile to: SGCluster + SGPoolingConfig (PgBouncer) + SGBackupConfig via direct reconciler
   - `ha: false` → 1 instance. `ha: true` → 2+ instances with Patroni
   - **Test:** create `ChoDatabase` with ha=false → assert SGCluster with 1 instance. Create with ha=true → assert 2+ instances. Wait for cluster ready.
 
@@ -373,13 +375,13 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 - [x] **5.2 — ChoQueue reconciler → NATS JetStream**
   - Watch `ChoQueue` CRD
-  - Compile to kro RGD + instance that render NATS JetStream resources (StatefulSet or operator CR)
+  - Compile to NATS JetStream resources (StatefulSet or operator CR) via direct reconciler
   - Expose connection credentials as Secret
   - **Test:** create ChoQueue → assert NATS resources exist → verify connectivity from a test pod
 
 - [x] **5.3 — ChoCache reconciler → Dragonfly**
   - Watch `ChoCache` CRD
-  - Compile to kro RGD + instance that render Dragonfly Deployment + Service
+  - Compile to Dragonfly Deployment + Service via direct reconciler
   - Size mapping: small/medium/large → resource requests
   - **Test:** create ChoCache → assert Deployment + Service exist → verify Redis-compatible connectivity from test pod
 

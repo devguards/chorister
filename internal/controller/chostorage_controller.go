@@ -24,7 +24,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -102,6 +104,13 @@ func (r *ChoStorageReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// Reconcile kro Claim for object variant
+	if storage.Spec.Variant == "object" {
+		if err := r.reconcileObjectStorageClaim(ctx, storage); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Update status
 	if err := r.Get(ctx, req.NamespacedName, storage); err != nil {
 		return ctrl.Result{}, err
@@ -109,6 +118,12 @@ func (r *ChoStorageReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	storage.Status.Ready = true
 	if storage.Status.Lifecycle == "" {
 		storage.Status.Lifecycle = "Active"
+	}
+
+	// Set object-variant-specific status fields.
+	if storage.Spec.Variant == "object" {
+		storage.Status.BucketName = fmt.Sprintf("%s-%s-%s", storage.Spec.Application, storage.Spec.Domain, storage.Name)
+		storage.Status.CredentialsSecretRef = fmt.Sprintf("%s-%s-%s-credentials", storage.Spec.Application, storage.Spec.Domain, storage.Name)
 	}
 
 	setCondition(&storage.Status.Conditions, metav1.Condition{
@@ -230,6 +245,59 @@ func (r *ChoStorageReconciler) handleStorageArchived(ctx context.Context, storag
 		}
 	}
 	return ctrl.Result{RequeueAfter: time.Hour}, nil
+}
+
+// reconcileObjectStorageClaim creates or updates a kro ResourceGraphDefinition Claim
+// for cloud object storage (S3/GCS/Azure Blob).
+func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, storage *choristerv1alpha1.ChoStorage) error {
+	log := logf.FromContext(ctx)
+	claimName := storage.Name + "-object-claim"
+	bucketName := fmt.Sprintf("%s-%s-%s", storage.Spec.Application, storage.Spec.Domain, storage.Name)
+
+	claimGVK := schema.GroupVersionKind{
+		Group:   "kro.run",
+		Version: "v1alpha1",
+		Kind:    "ObjectStorageClaim",
+	}
+
+	backend := storage.Spec.ObjectBackend
+	if backend == "" {
+		backend = "s3"
+	}
+
+	desired := &unstructured.Unstructured{}
+	desired.SetGroupVersionKind(claimGVK)
+	desired.SetName(claimName)
+	desired.SetNamespace(storage.Namespace)
+	desired.SetLabels(map[string]string{
+		labelApplication: storage.Spec.Application,
+		labelDomain:      storage.Spec.Domain,
+	})
+
+	spec := map[string]interface{}{
+		"bucketName": bucketName,
+		"backend":    backend,
+		"region":     "us-east-1",
+	}
+	if storage.Spec.Size != nil {
+		spec["maxSize"] = storage.Spec.Size.String()
+	}
+	desired.Object["spec"] = spec
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(claimGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: claimName, Namespace: storage.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		log.Info("Creating kro ObjectStorageClaim", "name", claimName, "backend", backend)
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Update existing claim spec if changed.
+	existing.Object["spec"] = spec
+	return r.Update(ctx, existing)
 }
 
 // SetupWithManager sets up the controller with the Manager.

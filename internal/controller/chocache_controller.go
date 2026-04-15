@@ -37,6 +37,8 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 )
 
+const dragonflyImage = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.27.1"
+
 // cacheSizeMap maps size names to resource requirements for Dragonfly.
 var cacheSizeMap = map[string]corev1.ResourceRequirements{
 	"small": {
@@ -109,9 +111,15 @@ func (r *ChoCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// Reconcile the Dragonfly Deployment
-	if err := r.reconcileDeployment(ctx, cache); err != nil {
-		return ctrl.Result{}, err
+	// Reconcile the Dragonfly workload (Deployment or StatefulSet)
+	if cacheNeedsStatefulSet(cache) {
+		if err := r.reconcileStatefulSet(ctx, cache); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		if err := r.reconcileDeployment(ctx, cache); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Reconcile the Service
@@ -151,7 +159,23 @@ func (r *ChoCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 func (r *ChoCacheReconciler) reconcileDeployment(ctx context.Context, cache *choristerv1alpha1.ChoCache) error {
 	labels := cacheLabels(cache)
 	resources := cacheResources(cache)
-	replicas := int32(1)
+	replicas := cacheReplicas(cache)
+
+	container := corev1.Container{
+		Name:      "dragonfly",
+		Image:     dragonflyImage,
+		Resources: resources,
+		Ports: []corev1.ContainerPort{
+			{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
+		},
+	}
+
+	// Add persistence volume mount if enabled (non-HA with persistence)
+	volumes, volumeMounts := cachePersistenceVolumes(cache)
+	if len(volumeMounts) > 0 {
+		container.VolumeMounts = volumeMounts
+		container.Args = append(container.Args, "--dir", "/data", "--dbfilename", "dump")
+	}
 
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -167,16 +191,8 @@ func (r *ChoCacheReconciler) reconcileDeployment(ctx context.Context, cache *cho
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:      "dragonfly",
-							Image:     "docker.dragonflydb.io/dragonflydb/dragonfly:latest",
-							Resources: resources,
-							Ports: []corev1.ContainerPort{
-								{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
-							},
-						},
-					},
+					Containers: []corev1.Container{container},
+					Volumes:    volumes,
 				},
 			},
 		},
@@ -301,11 +317,185 @@ func cacheResources(cache *choristerv1alpha1.ChoCache) corev1.ResourceRequiremen
 	return cacheSizeMap["small"]
 }
 
+// cacheReplicas returns the desired replica count.
+func cacheReplicas(cache *choristerv1alpha1.ChoCache) int32 {
+	if cache.Spec.Replicas != nil {
+		return *cache.Spec.Replicas
+	}
+	if cache.Spec.HA {
+		return 2
+	}
+	return 1
+}
+
+// cacheNeedsStatefulSet returns true when persistence or HA requires a StatefulSet.
+func cacheNeedsStatefulSet(cache *choristerv1alpha1.ChoCache) bool {
+	return cache.Spec.HA || (cache.Spec.Persistence != nil && cache.Spec.Persistence.Enabled)
+}
+
+// cachePersistenceVolumes returns emptyDir-based volumes/mounts when persistence
+// is requested but we are using a Deployment (non-HA, persistence without PVC templates).
+func cachePersistenceVolumes(cache *choristerv1alpha1.ChoCache) ([]corev1.Volume, []corev1.VolumeMount) {
+	if cache.Spec.Persistence == nil || !cache.Spec.Persistence.Enabled {
+		return nil, nil
+	}
+	// For Deployment, use emptyDir as a fallback (real PVC is in StatefulSet path).
+	volumes := []corev1.Volume{
+		{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: "/data"},
+	}
+	return volumes, mounts
+}
+
+// cachePVCTemplates returns VolumeClaimTemplates for StatefulSet-based caches.
+func cachePVCTemplates(cache *choristerv1alpha1.ChoCache) []corev1.PersistentVolumeClaim {
+	if cache.Spec.Persistence == nil || !cache.Spec.Persistence.Enabled {
+		return nil
+	}
+
+	storageSize := cache.Spec.Persistence.Size
+	if storageSize == "" {
+		storageSize = "1Gi"
+	}
+
+	pvc := corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "data",
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse(storageSize),
+				},
+			},
+		},
+	}
+
+	if cache.Spec.Persistence.StorageClass != "" {
+		pvc.Spec.StorageClassName = &cache.Spec.Persistence.StorageClass
+	}
+
+	return []corev1.PersistentVolumeClaim{pvc}
+}
+
+func (r *ChoCacheReconciler) reconcileStatefulSet(ctx context.Context, cache *choristerv1alpha1.ChoCache) error {
+	labels := cacheLabels(cache)
+	resources := cacheResources(cache)
+	replicas := cacheReplicas(cache)
+
+	container := corev1.Container{
+		Name:      "dragonfly",
+		Image:     dragonflyImage,
+		Resources: resources,
+		Ports: []corev1.ContainerPort{
+			{Name: "redis", ContainerPort: 6379, Protocol: corev1.ProtocolTCP},
+		},
+	}
+
+	if cache.Spec.Persistence != nil && cache.Spec.Persistence.Enabled {
+		container.VolumeMounts = []corev1.VolumeMount{
+			{Name: "data", MountPath: "/data"},
+		}
+		container.Args = append(container.Args, "--dir", "/data", "--dbfilename", "dump")
+	}
+
+	if cache.Spec.HA && replicas > 1 {
+		container.Args = append(container.Args, "--cluster_mode", "emulated")
+	}
+
+	desired := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cache.Name,
+			Namespace: cache.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: cache.Name + "-headless",
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{container},
+				},
+			},
+			VolumeClaimTemplates: cachePVCTemplates(cache),
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(cache, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		// Also create headless service for StatefulSet
+		if err := r.reconcileHeadlessService(ctx, cache); err != nil {
+			return err
+		}
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	if !equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) ||
+		!equality.Semantic.DeepEqual(existing.Spec.Replicas, desired.Spec.Replicas) {
+		existing.Spec.Template = desired.Spec.Template
+		existing.Spec.Replicas = desired.Spec.Replicas
+		return r.Update(ctx, existing)
+	}
+	return nil
+}
+
+func (r *ChoCacheReconciler) reconcileHeadlessService(ctx context.Context, cache *choristerv1alpha1.ChoCache) error {
+	labels := cacheLabels(cache)
+	name := cache.Name + "-headless"
+
+	desired := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cache.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "None",
+			Selector:  labels,
+			Ports: []corev1.ServicePort{
+				{Name: "redis", Port: 6379, TargetPort: intstr.FromInt32(6379), Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+	if err := controllerutil.SetControllerReference(cache, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	existing := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: cache.Namespace}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	return err
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ChoCacheReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&choristerv1alpha1.ChoCache{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Named("chocache").

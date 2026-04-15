@@ -55,6 +55,34 @@ spec:
               domain:
                 description: domain is the domain this cache belongs to.
                 type: string
+              ha:
+                description: |-
+                  ha enables high availability with multiple replicas.
+                  When true, Dragonfly runs as a StatefulSet with replication.
+                type: boolean
+              persistence:
+                description: persistence configures data persistence for the cache.
+                properties:
+                  enabled:
+                    description: enabled controls whether data is persisted to disk.
+                    type: boolean
+                  size:
+                    default: 1Gi
+                    description: size is the storage size for the persistent volume
+                      (e.g. "1Gi").
+                    type: string
+                  storageClass:
+                    description: storageClass is the StorageClass to use for the PVC.
+                    type: string
+                required:
+                - enabled
+                type: object
+              replicas:
+                description: replicas is the number of cache instances. Defaults to
+                  1, or 2 if ha=true.
+                format: int32
+                minimum: 1
+                type: integer
               resources:
                 description: resources defines explicit CPU/memory (overrides size
                   template).

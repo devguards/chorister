@@ -102,6 +102,10 @@ spec:
                 description: archivedAt is when the resource was archived.
                 format: date-time
                 type: string
+              bucketName:
+                description: bucketName is the provisioned bucket name (for object
+                  variant).
+                type: string
               compiledWithRevision:
                 description: compiledWithRevision is the controller revision that
                   compiled this resource.
@@ -167,10 +171,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialsSecretRef:
+                description: credentialsSecretRef is the name of the Secret containing
+                  access credentials (for object variant).
+                type: string
               deletableAfter:
                 description: deletableAfter is when the resource becomes eligible
                   for explicit deletion.
                 format: date-time
+                type: string
+              endpoint:
+                description: endpoint is the object storage endpoint URL (for object
+                  variant).
                 type: string
               lifecycle:
                 description: lifecycle is the stateful resource lifecycle state.

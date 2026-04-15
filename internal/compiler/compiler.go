@@ -37,6 +37,7 @@ var (
 	ciliumEnvoyConfigGVK      = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumEnvoyConfig"}
 	tetragonTracingPolicyGVK  = schema.GroupVersionKind{Group: "cilium.io", Version: "v1alpha1", Kind: "TracingPolicy"}
 	certManagerCertificateGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+	kroRGDGVK                 = schema.GroupVersionKind{Group: "kro.run", Version: "v1alpha1", Kind: "ResourceGraphDefinition"}
 )
 
 type LinkArtifacts struct {
@@ -478,4 +479,87 @@ func compileEgressRules(spec *choristerv1alpha1.NetworkEgressSpec) []interface{}
 		})
 	}
 	return rules
+}
+
+// CompileObjectStorageRGD generates a kro ResourceGraphDefinition that provisions
+// an S3-compatible bucket (via Crossplane or ACK) and exposes endpoint/credentials
+// to consuming workloads.
+func CompileObjectStorageRGD(storage *choristerv1alpha1.ChoStorage) *unstructured.Unstructured {
+	rgd := newUnstructured(kroRGDGVK, storage.Namespace, storage.Name+"-object-storage")
+	rgd.SetLabels(map[string]string{
+		"chorister.dev/application": storage.Spec.Application,
+		"chorister.dev/domain":      storage.Spec.Domain,
+		"chorister.dev/variant":     "object",
+	})
+
+	sizeStr := "10Gi"
+	if storage.Spec.Size != nil {
+		sizeStr = storage.Spec.Size.String()
+	}
+
+	backend := storage.Spec.ObjectBackend
+	if backend == "" {
+		backend = "s3"
+	}
+
+	rgd.Object["spec"] = map[string]interface{}{
+		"schema": map[string]interface{}{
+			"apiVersion": "v1alpha1",
+			"kind":       "ObjectStorageClaim",
+			"spec": map[string]interface{}{
+				"backend": backend,
+				"size":    sizeStr,
+				"application": map[string]interface{}{
+					"name":   storage.Spec.Application,
+					"domain": storage.Spec.Domain,
+				},
+			},
+			"status": map[string]interface{}{
+				"endpoint":             "",
+				"bucketName":           "",
+				"credentialsSecretRef": "",
+			},
+		},
+		"resources": []interface{}{
+			map[string]interface{}{
+				"id": "bucket",
+				"template": map[string]interface{}{
+					"apiVersion": crossplaneAPIVersion(backend),
+					"kind":       crossplaneKind(backend),
+					"metadata": map[string]interface{}{
+						"name": fmt.Sprintf("%s-%s-%s", storage.Spec.Application, storage.Spec.Domain, storage.Name),
+					},
+					"spec": map[string]interface{}{
+						"forProvider": map[string]interface{}{
+							"region": "us-east-1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return rgd
+}
+
+func crossplaneAPIVersion(backend string) string {
+	switch backend {
+	case "gcs":
+		return "storage.gcp.upbound.io/v1beta1"
+	case "azure":
+		return "storage.azure.upbound.io/v1beta1"
+	default:
+		return "s3.aws.upbound.io/v1beta1"
+	}
+}
+
+func crossplaneKind(backend string) string {
+	switch backend {
+	case "gcs":
+		return "Bucket"
+	case "azure":
+		return "Account"
+	default:
+		return "Bucket"
+	}
 }

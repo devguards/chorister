@@ -601,4 +601,102 @@ var _ = Describe("ChoCompute Controller", func() {
 			Expect(compute.Status.CompiledWithRevision).To(Equal("v2.0.0"))
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Idempotency tests
+	// -----------------------------------------------------------------------
+	Context("Idempotency", func() {
+		It("should not update Deployment on second reconcile with same spec", func() {
+			replicas := int32(2)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "compute-idemp", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Variant:     "long-running",
+					Image:       "nginx:1.25",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}}
+
+			// First reconcile
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy1 := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: "default"}, deploy1)).To(Succeed())
+			rv1 := deploy1.ResourceVersion
+
+			// Second reconcile — no spec change
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy2 := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: "default"}, deploy2)).To(Succeed())
+			Expect(deploy2.ResourceVersion).To(Equal(rv1), "Deployment should not be updated on idempotent reconcile")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Not-found handling
+	// -----------------------------------------------------------------------
+	Context("Not-found handling", func() {
+		It("should return nil when ChoCompute does not exist", func() {
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "does-not-exist", Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Status verification
+	// -----------------------------------------------------------------------
+	Context("Status verification", func() {
+		It("should set Ready condition and status fields after reconcile", func() {
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "compute-status-check", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Variant:     "long-running",
+					Image:       "nginx:1.25",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			// Should have conditions set
+			Expect(compute.Status.Conditions).NotTo(BeEmpty())
+
+			// Find Ready condition
+			var readyFound bool
+			for _, c := range compute.Status.Conditions {
+				if c.Type == "Ready" {
+					readyFound = true
+					break
+				}
+			}
+			Expect(readyFound).To(BeTrue(), "expected Ready condition to be set")
+		})
+	})
 })

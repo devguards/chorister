@@ -24,6 +24,8 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -318,6 +320,163 @@ var _ = Describe("ChoDatabase Controller", func() {
 				Namespace: "db-rev-mismatch",
 			}, secret)
 			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no Secret when revision mismatches")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// D.1 — StackGres SGCluster construction
+	// -----------------------------------------------------------------------
+	Context("D.1 — SGCluster construction", func() {
+		It("should build SGCluster with correct HA settings", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: "myapp-payments"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "medium",
+					HA:          true,
+				},
+			}
+			sgCluster := buildSGCluster(db, "payments-main", "payments-main", 2)
+
+			Expect(sgCluster.GetKind()).To(Equal("SGCluster"))
+			Expect(sgCluster.GetName()).To(Equal("payments-main"))
+			Expect(sgCluster.GetNamespace()).To(Equal("myapp-payments"))
+
+			spec, ok := sgCluster.Object["spec"].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(spec["instances"]).To(Equal(int64(2)))
+
+			postgres := spec["postgres"].(map[string]interface{})
+			Expect(postgres["version"]).To(Equal("16"))
+
+			pods := spec["pods"].(map[string]interface{})
+			pv := pods["persistentVolume"].(map[string]interface{})
+			Expect(pv["size"]).To(Equal("50Gi"))
+
+			nonProd := spec["nonProductionOptions"].(map[string]interface{})
+			Expect(nonProd["disableClusterPodAntiAffinity"]).To(BeFalse())
+		})
+
+		It("should build SGCluster with single instance for non-HA", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "myapp-dev"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "dev",
+					Engine:      "postgres",
+					Size:        "small",
+					HA:          false,
+				},
+			}
+			sgCluster := buildSGCluster(db, "dev-test", "dev-test", 1)
+
+			spec := sgCluster.Object["spec"].(map[string]interface{})
+			Expect(spec["instances"]).To(Equal(int64(1)))
+
+			pods := spec["pods"].(map[string]interface{})
+			pv := pods["persistentVolume"].(map[string]interface{})
+			Expect(pv["size"]).To(Equal("10Gi"))
+
+			nonProd := spec["nonProductionOptions"].(map[string]interface{})
+			Expect(nonProd["disableClusterPodAntiAffinity"]).To(BeTrue())
+		})
+
+		It("should include backup configuration", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: "ns"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "app",
+					Domain:      "data",
+					Engine:      "postgres",
+					Size:        "large",
+				},
+			}
+			sgCluster := buildSGCluster(db, "data-main", "data-main", 1)
+
+			spec := sgCluster.Object["spec"].(map[string]interface{})
+			configs := spec["configurations"].(map[string]interface{})
+			backups := configs["backups"].([]interface{})
+			Expect(len(backups)).To(Equal(1))
+
+			backup := backups[0].(map[string]interface{})
+			Expect(backup["cronSchedule"]).To(Equal("0 3 * * *"))
+			Expect(backup["retention"]).To(Equal(int64(7)))
+		})
+
+		It("should map sizing tiers to resources", func() {
+			Expect(dbVolumeSize("small")).To(Equal("10Gi"))
+			Expect(dbVolumeSize("medium")).To(Equal("50Gi"))
+			Expect(dbVolumeSize("large")).To(Equal("200Gi"))
+			Expect(dbVolumeSize("unknown")).To(Equal("10Gi"))
+
+			cpu, mem := dbProfileResources("small")
+			Expect(cpu).To(Equal("1"))
+			Expect(mem).To(Equal("2Gi"))
+
+			cpu, mem = dbProfileResources("large")
+			Expect(cpu).To(Equal("4"))
+			Expect(mem).To(Equal("8Gi"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Idempotency tests
+	// -----------------------------------------------------------------------
+	Context("Idempotency", func() {
+		It("should not update StackGres cluster on second reconcile", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "db-idemp", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, db) }()
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace}}
+
+			// First reconcile
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get SGCluster after first reconcile
+			sgCluster := &unstructured.Unstructured{}
+			sgCluster.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   "stackgres.io",
+				Version: "v1",
+				Kind:    "SGCluster",
+			})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "db-idemp", Namespace: "default"}, sgCluster)
+			if err == nil {
+				rv1 := sgCluster.GetResourceVersion()
+
+				// Second reconcile
+				_, err = reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = k8sClient.Get(ctx, types.NamespacedName{Name: "db-idemp", Namespace: "default"}, sgCluster)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sgCluster.GetResourceVersion()).To(Equal(rv1))
+			}
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Not-found handling
+	// -----------------------------------------------------------------------
+	Context("Not-found handling", func() {
+		It("should return nil when ChoDatabase does not exist", func() {
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "nonexistent-db", Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

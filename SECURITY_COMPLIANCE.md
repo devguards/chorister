@@ -74,6 +74,8 @@ The framework details in Sections 4–8 remain the internal reference for how th
 
 CRD asset inventory, OPA software allowlist, pod security standards (no privileged, no hostPID/IPC/Network, drop all caps, non-root), RBAC lifecycle, OIDC + namespace isolation, audit logs (Loki), automated backups (StackGres), Hubble network monitoring, encryption at rest (always on), deny-all NetworkPolicy, kube-bench Level 1 validation, promotion approval (always), egress health for high-criticality providers, promotion freeze on degradation.
 
+**Admission enforcement:** Validating webhooks for `ChoApplication` and `ChoNetwork` enforce policy at creation/update time. The webhooks call `internal/validation/` functions including ingress auth requirements, egress allowlist validation, compliance escalation checks, and consumes/supplies consistency. Invalid resources are rejected before they enter the cluster.
+
 ### `standard`
 
 Everything in `essential`, plus: image scanning gate before promotion (Trivy/Grype), continuous vuln scanning CronJobs, centralized log alerting, Hubble network anomaly detection, access review automation (flag stale memberships), OIDC group sync, config change alerting, weekly kube-bench re-scans, HA required for databases (`ha: true`), PodDisruptionBudget + min replicas > 1, SOC 2 evidence fields in audit events, structured change management trail.

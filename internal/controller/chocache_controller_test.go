@@ -256,4 +256,278 @@ var _ = Describe("ChoCache Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no StatefulSet when revision mismatches")
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// D.4.2 — ChoCache persistence (PVC)
+	// -----------------------------------------------------------------------
+	Context("D.4.2 — ChoCache persistence", func() {
+		It("should create StatefulSet with PVC when persistence is enabled", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-persist", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+					Persistence: &choristerv1alpha1.CachePersistenceSpec{
+						Enabled: true,
+						Size:    "2Gi",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should create StatefulSet, not Deployment
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-persist", Namespace: "default"}, sts)).To(Succeed())
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal("data"))
+
+			storageReq := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.String()).To(Equal("2Gi"))
+
+			// Container should have volume mount and args
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.VolumeMounts).To(HaveLen(1))
+			Expect(container.VolumeMounts[0].MountPath).To(Equal("/data"))
+			Expect(container.Args).To(ContainElements("--dir", "/data"))
+
+			// Deployment should NOT exist
+			deploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "cache-persist", Namespace: "default"}, deploy)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should use Deployment without PVC when persistence is disabled", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-no-persist", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-no-persist", Namespace: "default"}, deploy)).To(Succeed())
+
+			// No volumes should be set
+			Expect(deploy.Spec.Template.Spec.Volumes).To(BeEmpty())
+		})
+
+		It("should use custom StorageClass when specified", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-sc", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+					Persistence: &choristerv1alpha1.CachePersistenceSpec{
+						Enabled:      true,
+						Size:         "5Gi",
+						StorageClass: "fast-ssd",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-sc", Namespace: "default"}, sts)).To(Succeed())
+			Expect(sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName).To(HaveValue(Equal("fast-ssd")))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// D.4.3 — ChoCache HA replica support
+	// -----------------------------------------------------------------------
+	Context("D.4.3 — ChoCache HA replicas", func() {
+		It("should create StatefulSet with 2 replicas when HA is enabled", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-ha", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "medium",
+					HA:          true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-ha", Namespace: "default"}, sts)).To(Succeed())
+			Expect(*sts.Spec.Replicas).To(Equal(int32(2)))
+
+			// Should have cluster_mode emulated arg
+			container := sts.Spec.Template.Spec.Containers[0]
+			Expect(container.Args).To(ContainElements("--cluster_mode", "emulated"))
+
+			// Should also have headless service
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-ha-headless", Namespace: "default"}, svc)).To(Succeed())
+			Expect(svc.Spec.ClusterIP).To(Equal("None"))
+		})
+
+		It("should use explicit replica count when specified", func() {
+			replicas := int32(3)
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-replicas", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+					HA:          true,
+					Replicas:    &replicas,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-replicas", Namespace: "default"}, sts)).To(Succeed())
+			Expect(*sts.Spec.Replicas).To(Equal(int32(3)))
+		})
+
+		It("should use 1 replica by default (no HA)", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-single", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-single", Namespace: "default"}, deploy)).To(Succeed())
+			Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Idempotency tests
+	// -----------------------------------------------------------------------
+	Context("Idempotency", func() {
+		It("should produce same result when reconciled twice", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-idempotent", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "medium",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace}}
+
+			// First reconcile
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get state after first reconcile
+			deploy1 := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: "default"}, deploy1)).To(Succeed())
+			rv1 := deploy1.ResourceVersion
+
+			// Second reconcile
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get state after second reconcile — should be unchanged
+			deploy2 := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: "default"}, deploy2)).To(Succeed())
+			Expect(deploy2.ResourceVersion).To(Equal(rv1), "Deployment should not be updated on second reconcile")
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Owner reference tests
+	// -----------------------------------------------------------------------
+	Context("Owner references", func() {
+		It("should set owner reference on created resources", func() {
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "cache-owner", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-owner", Namespace: "default"}, deploy)).To(Succeed())
+			Expect(deploy.OwnerReferences).To(HaveLen(1))
+			Expect(deploy.OwnerReferences[0].Name).To(Equal("cache-owner"))
+
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-owner", Namespace: "default"}, svc)).To(Succeed())
+			Expect(svc.OwnerReferences).To(HaveLen(1))
+			Expect(svc.OwnerReferences[0].Name).To(Equal("cache-owner"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Not-found handling
+	// -----------------------------------------------------------------------
+	Context("Not-found handling", func() {
+		It("should return nil when resource is not found", func() {
+			reconciler := &ChoCacheReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "nonexistent", Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

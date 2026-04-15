@@ -36,6 +36,35 @@ type ChoCacheSpec struct {
 	// resources defines explicit CPU/memory (overrides size template).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// ha enables high availability with multiple replicas.
+	// When true, Dragonfly runs as a StatefulSet with replication.
+	// +optional
+	HA bool `json:"ha,omitempty"`
+
+	// replicas is the number of cache instances. Defaults to 1, or 2 if ha=true.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// persistence configures data persistence for the cache.
+	// +optional
+	Persistence *CachePersistenceSpec `json:"persistence,omitempty"`
+}
+
+// CachePersistenceSpec configures persistence for the cache.
+type CachePersistenceSpec struct {
+	// enabled controls whether data is persisted to disk.
+	Enabled bool `json:"enabled"`
+
+	// size is the storage size for the persistent volume (e.g. "1Gi").
+	// +kubebuilder:default="1Gi"
+	// +optional
+	Size string `json:"size,omitempty"`
+
+	// storageClass is the StorageClass to use for the PVC.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
 }
 
 // ChoCacheStatus defines the observed state of ChoCache.

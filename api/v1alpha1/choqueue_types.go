@@ -41,6 +41,32 @@ type ChoQueueSpec struct {
 	// resources defines explicit CPU/memory/storage (overrides size template).
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// storageSize is the PVC size for NATS JetStream data durability (e.g. "5Gi").
+	// Defaults to "1Gi" if not specified.
+	// +optional
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// jetStream configures NATS JetStream stream settings.
+	// +optional
+	JetStream *JetStreamConfig `json:"jetStream,omitempty"`
+}
+
+// JetStreamConfig defines NATS JetStream stream configuration.
+type JetStreamConfig struct {
+	// maxBytes is the maximum total bytes for the JetStream store (e.g. "512Mi", "1Gi").
+	// +optional
+	MaxBytes string `json:"maxBytes,omitempty"`
+
+	// retention is the JetStream retention policy: limits, interest, or workqueue.
+	// +kubebuilder:validation:Enum=limits;interest;workqueue
+	// +kubebuilder:default=limits
+	// +optional
+	Retention string `json:"retention,omitempty"`
+
+	// maxAge is the maximum age of messages (e.g. "24h", "7d"). Empty means no limit.
+	// +optional
+	MaxAge string `json:"maxAge,omitempty"`
 }
 
 // ChoQueueStatus defines the observed state of ChoQueue.
