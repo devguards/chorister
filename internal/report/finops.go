@@ -203,8 +203,7 @@ func BudgetReport(ctx context.Context, q *query.Querier, appName string) (*Budge
 	defaultBudgetCents := 0
 	defaultBudgetStr := "(not set)"
 	if app.Spec.Policy.Sandbox != nil && app.Spec.Policy.Sandbox.DefaultBudgetPerDomain != nil {
-		f, _ := strconv.ParseFloat(app.Spec.Policy.Sandbox.DefaultBudgetPerDomain.String(), 64)
-		defaultBudgetCents = int(f * 100)
+		defaultBudgetCents = int(*app.Spec.Policy.Sandbox.DefaultBudgetPerDomain * 100)
 		defaultBudgetStr = formatCostFromCents(defaultBudgetCents)
 	}
 

@@ -376,7 +376,7 @@ var _ = Describe("ChoCompute Controller", func() {
 			ns := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "rev-match-test",
-					Labels: map[string]string{labelRevision: "1-0"},
+					Labels: map[string]string{LabelRevision: "1-0"},
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
@@ -385,7 +385,7 @@ var _ = Describe("ChoCompute Controller", func() {
 			if ns.Labels == nil {
 				ns.Labels = map[string]string{}
 			}
-			ns.Labels[labelRevision] = "1-0"
+			ns.Labels[LabelRevision] = "1-0"
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			replicas := int32(1)
@@ -424,7 +424,7 @@ var _ = Describe("ChoCompute Controller", func() {
 			ns := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "rev-mismatch-test",
-					Labels: map[string]string{labelRevision: "2-0"},
+					Labels: map[string]string{LabelRevision: "2-0"},
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
@@ -433,7 +433,7 @@ var _ = Describe("ChoCompute Controller", func() {
 			if ns.Labels == nil {
 				ns.Labels = map[string]string{}
 			}
-			ns.Labels[labelRevision] = "2-0"
+			ns.Labels[LabelRevision] = "2-0"
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			replicas := int32(1)
@@ -488,7 +488,7 @@ var _ = Describe("ChoCompute Controller", func() {
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
 			// Ensure no revision label
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rev-unlabeled-test"}, ns)).To(Succeed())
-			delete(ns.Labels, labelRevision)
+			delete(ns.Labels, LabelRevision)
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			replicas := int32(1)

@@ -183,9 +183,15 @@ type SandboxPolicy struct {
 	// +optional
 	MaxIdleDays *int `json:"maxIdleDays,omitempty"`
 
-	// defaultBudgetPerDomain is the default monthly budget per domain for sandbox costs.
+	// defaultBudgetPerDomain is the default monthly cost budget per domain (e.g. 500 = $500/month).
 	// +optional
-	DefaultBudgetPerDomain *resource.Quantity `json:"defaultBudgetPerDomain,omitempty"`
+	DefaultBudgetPerDomain *int64 `json:"defaultBudgetPerDomain,omitempty"`
+
+	// budgetAlertThreshold is the percentage of budget usage that triggers an alert (e.g. 80).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	BudgetAlertThreshold *int `json:"budgetAlertThreshold,omitempty"`
 }
 
 // DomainSpec defines a bounded context within an application.
@@ -211,6 +217,21 @@ type DomainSpec struct {
 	// supplies declares what this domain exposes to others.
 	// +optional
 	Supplies *SupplySpec `json:"supplies,omitempty"`
+
+	// sandbox defines domain-level sandbox policy overrides.
+	// +optional
+	Sandbox *DomainSandboxPolicy `json:"sandbox,omitempty"`
+}
+
+// DomainSandboxPolicy overrides application-level sandbox policy for a domain.
+type DomainSandboxPolicy struct {
+	// budget is the monthly cost budget for this domain's sandboxes (e.g. 1000 = $1000/month).
+	// +optional
+	Budget *int64 `json:"budget,omitempty"`
+
+	// maxIdleDays overrides the max idle days for this domain.
+	// +optional
+	MaxIdleDays *int `json:"maxIdleDays,omitempty"`
 }
 
 // ConsumeRef declares a dependency on another domain's service.
@@ -272,6 +293,43 @@ type ChoApplicationStatus struct {
 	// domainNamespaces maps domain names to their namespace names.
 	// +optional
 	DomainNamespaces map[string]string `json:"domainNamespaces,omitempty"`
+
+	// egressHealth summarizes per-FQDN egress health from Hubble metrics.
+	// +optional
+	EgressHealth map[string]EgressHealthStatus `json:"egressHealth,omitempty"`
+
+	// sandboxSummary contains domain-level sandbox budget aggregation.
+	// +optional
+	SandboxSummary map[string]DomainSandboxSummary `json:"sandboxSummary,omitempty"`
+}
+
+// EgressHealthStatus reports health of an egress destination.
+type EgressHealthStatus struct {
+	// status is the health state (Healthy, Degraded, Unreachable).
+	Status string `json:"status"`
+
+	// lastChecked is when the health was last evaluated.
+	// +optional
+	LastChecked *metav1.Time `json:"lastChecked,omitempty"`
+
+	// errorRate is the observed error rate percentage.
+	// +optional
+	ErrorRate string `json:"errorRate,omitempty"`
+}
+
+// DomainSandboxSummary contains aggregated sandbox budget info for a domain.
+type DomainSandboxSummary struct {
+	// activeSandboxes is the number of active sandboxes.
+	ActiveSandboxes int `json:"activeSandboxes"`
+
+	// estimatedMonthlyCost is the total estimated monthly cost of all sandboxes.
+	EstimatedMonthlyCost string `json:"estimatedMonthlyCost"`
+
+	// budget is the sandbox budget for this domain.
+	Budget string `json:"budget"`
+
+	// budgetUsagePercent is the percentage of budget used.
+	BudgetUsagePercent int `json:"budgetUsagePercent"`
 }
 
 // +kubebuilder:object:root=true

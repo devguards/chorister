@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -220,6 +221,103 @@ var _ = Describe("ChoDatabase Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
 			Expect(db.Status.Lifecycle).To(Equal("Deletable"))
 			Expect(db.Status.Ready).To(BeFalse())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 2 — Revision filtering on ChoDatabase controller
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Controller revision filtering", func() {
+		It("should reconcile ChoDatabase in matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "db-rev-match",
+					Labels: map[string]string{LabelRevision: "1-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "db-rev-match"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "1-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-match-db", Namespace: "db-rev-match"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, db))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, db) }()
+
+			reconciler := &ChoDatabaseReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have reconciled (credential Secret created)
+			secret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "payments--database--rev-match-db-credentials",
+				Namespace: "db-rev-match",
+			}, secret)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should skip ChoDatabase in non-matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "db-rev-mismatch",
+					Labels: map[string]string{LabelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "db-rev-mismatch"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-skip-db", Namespace: "db-rev-mismatch"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, db))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, db) }()
+
+			reconciler := &ChoDatabaseReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have skipped — no credential Secret created
+			secret := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "payments--database--rev-skip-db-credentials",
+				Namespace: "db-rev-mismatch",
+			}, secret)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no Secret when revision mismatches")
 		})
 	})
 })

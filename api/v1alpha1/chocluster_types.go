@@ -39,6 +39,10 @@ type ChoClusterSpec struct {
 	// +optional
 	ControllerRevision string `json:"controllerRevision,omitempty"`
 
+	// revisions defines the blue-green controller revisions for upgrades.
+	// +optional
+	Revisions []ControllerRevisionEntry `json:"revisions,omitempty"`
+
 	// observability defines the observability stack configuration.
 	// +optional
 	Observability *ObservabilitySpec `json:"observability,omitempty"`
@@ -46,6 +50,15 @@ type ChoClusterSpec struct {
 	// externalSecretBackend configures the external secret backend for production environments.
 	// +optional
 	ExternalSecretBackend *ExternalSecretBackendSpec `json:"externalSecretBackend,omitempty"`
+}
+
+// ControllerRevisionEntry defines a named controller revision with a tag.
+type ControllerRevisionEntry struct {
+	// name is the revision identifier (e.g. "1-4", "1-5").
+	Name string `json:"name"`
+
+	// tag is the revision tag (e.g. "stable", "canary").
+	Tag string `json:"tag"`
 }
 
 // ExternalSecretBackendSpec configures external secret management.
@@ -90,6 +103,12 @@ type SizingTemplate struct {
 	Memory resource.Quantity `json:"memory,omitempty"`
 	// +optional
 	Storage resource.Quantity `json:"storage,omitempty"`
+	// instances is the number of database instances (e.g. 1 for single, 2+ for HA).
+	// +optional
+	Instances *int32 `json:"instances,omitempty"`
+	// replicas is the number of queue/cache replicas.
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
 }
 
 // FinOpsSpec defines cost estimation rates.
@@ -110,6 +129,15 @@ type CostRates struct {
 	// storagePerGBMonth is the cost per GB storage per month.
 	// +optional
 	StoragePerGBMonth *resource.Quantity `json:"storagePerGBMonth,omitempty"`
+	// postgresSmall is the flat monthly rate for a small PostgreSQL instance.
+	// +optional
+	PostgresSmall *resource.Quantity `json:"postgresSmall,omitempty"`
+	// postgresMedium is the flat monthly rate for a medium PostgreSQL instance.
+	// +optional
+	PostgresMedium *resource.Quantity `json:"postgresMedium,omitempty"`
+	// postgresLarge is the flat monthly rate for a large PostgreSQL instance.
+	// +optional
+	PostgresLarge *resource.Quantity `json:"postgresLarge,omitempty"`
 }
 
 // ObservabilitySpec configures the cluster-wide observability stack (Grafana LGTM).

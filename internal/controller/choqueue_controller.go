@@ -77,15 +77,18 @@ var queueSizeMap = map[string]corev1.ResourceRequirements{
 // ChoQueueReconciler reconciles a ChoQueue object
 type ChoQueueReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=choqueues,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=choqueues/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=choqueues/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile moves the cluster state to match the desired ChoQueue spec.
 func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -97,6 +100,16 @@ func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := ShouldSkipForRevision(ctx, r.Client, r.ControllerRevision, queue.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", queue.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Handle deletion via finalizer

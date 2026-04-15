@@ -424,7 +424,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
 
 			// Create ChoApplication with a small budget ($10)
-			budget := resource.MustParse("10")
+			budget := int64(10)
 			app := &choristerv1alpha1.ChoApplication{
 				ObjectMeta: metav1.ObjectMeta{Name: "budget-app", Namespace: "default"},
 				Spec: choristerv1alpha1.ChoApplicationSpec{

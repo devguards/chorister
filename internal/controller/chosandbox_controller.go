@@ -388,7 +388,7 @@ func (r *ChoSandboxReconciler) lookupCostRates(ctx context.Context) *choristerv1
 // checkDomainBudget checks if creating/maintaining this sandbox would exceed
 // the domain's sandbox budget. Returns (exceeded, totalCost, budget, error).
 func (r *ChoSandboxReconciler) checkDomainBudget(ctx context.Context, sandbox *choristerv1alpha1.ChoSandbox, app *choristerv1alpha1.ChoApplication) (bool, float64, float64, error) {
-	budget := app.Spec.Policy.Sandbox.DefaultBudgetPerDomain.AsApproximateFloat64()
+	budget := float64(*app.Spec.Policy.Sandbox.DefaultBudgetPerDomain)
 	if budget <= 0 {
 		return false, 0, 0, nil
 	}

@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -552,6 +553,252 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			report := &choristerv1alpha1.ChoVulnerabilityReport{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "promo-scan-scan", Namespace: "default"}, report)).To(Succeed())
 			Expect(report.Status.CriticalCount).To(BeNumerically(">", 0))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 1 — Promotion copies ChoNetwork and ChoStorage resources
+	// -----------------------------------------------------------------------
+	Context("Gap 1 — Promotion copies all 6 resource types", func() {
+		It("should copy ChoNetwork resources from sandbox to production", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-net-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			for _, nsName := range []string{"promo-net-app-api", "promo-net-app-api-sandbox-dev"} {
+				Expect(ensureNamespaceExists(ctx, nsName)).To(Succeed())
+			}
+
+			// Create ChoNetwork in sandbox
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "api-boundary", Namespace: "promo-net-app-api-sandbox-dev"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "promo-net-app",
+					Domain:      "api",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-net-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-net-app",
+					Domain:      "api",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add approval
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile through full lifecycle
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Completed"))
+
+			// Verify ChoNetwork was copied to production
+			prodNetwork := &choristerv1alpha1.ChoNetwork{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "api-boundary", Namespace: "promo-net-app-api"}, prodNetwork)).To(Succeed())
+			Expect(prodNetwork.Spec.Ingress.Port).To(Equal(443))
+		})
+
+		It("should copy ChoStorage resources from sandbox to production", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-stor-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "data"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			for _, nsName := range []string{"promo-stor-app-data", "promo-stor-app-data-sandbox-dev"} {
+				Expect(ensureNamespaceExists(ctx, nsName)).To(Succeed())
+			}
+
+			// Create ChoStorage in sandbox
+			storageSize := resource.MustParse("10Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "uploads", Namespace: "promo-stor-app-data-sandbox-dev"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application: "promo-stor-app",
+					Domain:      "data",
+					Variant:     "object",
+					Size:        &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, storage) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-stor-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-stor-app",
+					Domain:      "data",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Completed"))
+
+			// Verify ChoStorage was copied to production
+			prodStorage := &choristerv1alpha1.ChoStorage{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "uploads", Namespace: "promo-stor-app-data"}, prodStorage)).To(Succeed())
+			Expect(prodStorage.Spec.Variant).To(Equal("object"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 4 — ChoCache archiving during promotion
+	// -----------------------------------------------------------------------
+	Context("Gap 4 — ChoCache archive lifecycle during promotion", func() {
+		It("should archive orphaned ChoCache resources in production", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-cache-arch-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			prodNs := "promo-cache-arch-app-api"
+			sandboxNs := "promo-cache-arch-app-api-sandbox-dev"
+			for _, nsName := range []string{prodNs, sandboxNs} {
+				Expect(ensureNamespaceExists(ctx, nsName)).To(Succeed())
+			}
+
+			// Create a ChoCache in production (simulating a previously promoted resource)
+			prodCache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "sessions-cache", Namespace: prodNs},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "promo-cache-arch-app",
+					Domain:      "api",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, prodCache)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, prodCache) }()
+
+			// The sandbox does NOT have this cache (it was removed from DSL)
+			// Create a different compute in sandbox so promotion has something to do
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "api-server", Namespace: sandboxNs},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "promo-cache-arch-app",
+					Domain:      "api",
+					Image:       "nginx:1.25",
+					Replicas:    int32Ptr(1),
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-cache-arch-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-cache-arch-app",
+					Domain:      "api",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			for i := 0; i < 5; i++ {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Completed"))
+
+			// Verify the orphaned ChoCache in production was archived
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "sessions-cache", Namespace: prodNs}, prodCache)).To(Succeed())
+			Expect(prodCache.Status.Lifecycle).To(Equal("Archived"))
+			Expect(prodCache.Status.ArchivedAt).NotTo(BeNil())
+			Expect(prodCache.Status.DeletableAfter).NotTo(BeNil())
+			Expect(prodCache.Status.Ready).To(BeFalse())
 		})
 	})
 })

@@ -51,6 +51,8 @@ type ChoPromotionRequestReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=choqueues,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocaches,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=chorister.dev,resources=chostorages,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chovulnerabilityreports/status,verbs=get;update;patch
 
@@ -328,6 +330,60 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 		}
 	}
 
+	// Copy ChoNetwork resources
+	networkList := &choristerv1alpha1.ChoNetworkList{}
+	if err := r.List(ctx, networkList, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoNetworks: %w", err)
+	}
+	for i := range networkList.Items {
+		src := &networkList.Items[i]
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoNetwork",
+			func() client.Object {
+				return &choristerv1alpha1.ChoNetwork{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      src.Name,
+						Namespace: prodNs,
+						Labels:    src.Labels,
+					},
+					Spec: src.Spec,
+				}
+			},
+			func(existing client.Object) {
+				e := existing.(*choristerv1alpha1.ChoNetwork)
+				e.Spec = src.Spec
+			},
+		); err != nil {
+			return err
+		}
+	}
+
+	// Copy ChoStorage resources
+	storageList := &choristerv1alpha1.ChoStorageList{}
+	if err := r.List(ctx, storageList, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoStorages: %w", err)
+	}
+	for i := range storageList.Items {
+		src := &storageList.Items[i]
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoStorage",
+			func() client.Object {
+				return &choristerv1alpha1.ChoStorage{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      src.Name,
+						Namespace: prodNs,
+						Labels:    src.Labels,
+					},
+					Spec: src.Spec,
+				}
+			},
+			func(existing client.Object) {
+				e := existing.(*choristerv1alpha1.ChoStorage)
+				e.Spec = src.Spec
+			},
+		); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -378,6 +434,28 @@ func (r *ChoPromotionRequestReconciler) ensureResourceInNamespace(
 		return r.Update(ctx, obj)
 	case "ChoCache":
 		obj := &choristerv1alpha1.ChoCache{}
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		if errors.IsNotFound(err) {
+			return r.Create(ctx, newFn())
+		}
+		if err != nil {
+			return err
+		}
+		updateFn(obj)
+		return r.Update(ctx, obj)
+	case "ChoNetwork":
+		obj := &choristerv1alpha1.ChoNetwork{}
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		if errors.IsNotFound(err) {
+			return r.Create(ctx, newFn())
+		}
+		if err != nil {
+			return err
+		}
+		updateFn(obj)
+		return r.Update(ctx, obj)
+	case "ChoStorage":
+		obj := &choristerv1alpha1.ChoStorage{}
 		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
 			return r.Create(ctx, newFn())
@@ -515,6 +593,11 @@ func (r *ChoPromotionRequestReconciler) archiveOrphanedStatefulResources(
 		return err
 	}
 
+	// Archive orphaned ChoCache resources
+	if err := r.archiveOrphanedCaches(ctx, sandboxNs, prodNs, retention, log); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -640,6 +723,48 @@ func (r *ChoPromotionRequestReconciler) archiveOrphanedStorages(
 			return fmt.Errorf("archiving ChoStorage %s: %w", s.Name, err)
 		}
 		log.Info("Archived orphaned ChoStorage", "name", s.Name, "namespace", prodNs)
+	}
+	return nil
+}
+
+func (r *ChoPromotionRequestReconciler) archiveOrphanedCaches(
+	ctx context.Context, sandboxNs, prodNs string, retention time.Duration, log logr.Logger,
+) error {
+	sandboxCaches := &choristerv1alpha1.ChoCacheList{}
+	if err := r.List(ctx, sandboxCaches, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoCaches: %w", err)
+	}
+	sandboxNames := make(map[string]bool, len(sandboxCaches.Items))
+	for _, c := range sandboxCaches.Items {
+		sandboxNames[c.Name] = true
+	}
+
+	prodCaches := &choristerv1alpha1.ChoCacheList{}
+	if err := r.List(ctx, prodCaches, client.InNamespace(prodNs)); err != nil {
+		return fmt.Errorf("listing production ChoCaches: %w", err)
+	}
+
+	for i := range prodCaches.Items {
+		c := &prodCaches.Items[i]
+		if sandboxNames[c.Name] || c.Status.Lifecycle == "Archived" || c.Status.Lifecycle == "Deletable" {
+			continue
+		}
+		now := metav1.Now()
+		deletableAfter := metav1.NewTime(now.Add(retention))
+		c.Status.Lifecycle = "Archived"
+		c.Status.ArchivedAt = &now
+		c.Status.DeletableAfter = &deletableAfter
+		c.Status.Ready = false
+		setCondition(&c.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "Archived",
+			Message: "Resource archived during promotion (removed from sandbox DSL)",
+		})
+		if err := r.Status().Update(ctx, c); err != nil {
+			return fmt.Errorf("archiving ChoCache %s: %w", c.Name, err)
+		}
+		log.Info("Archived orphaned ChoCache", "name", c.Name, "namespace", prodNs)
 	}
 	return nil
 }

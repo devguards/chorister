@@ -125,6 +125,10 @@ spec:
           status:
             description: ChoCacheStatus defines the observed state of ChoCache.
             properties:
+              archivedAt:
+                description: archivedAt is the time the resource was archived.
+                format: date-time
+                type: string
               compiledWithRevision:
                 description: compiledWithRevision is the controller revision that
                   compiled this resource.
@@ -193,6 +197,15 @@ spec:
               credentialsSecretRef:
                 description: credentialsSecretRef is the name of the Secret containing
                   connection credentials.
+                type: string
+              deletableAfter:
+                description: deletableAfter is the earliest time the resource may
+                  be permanently deleted.
+                format: date-time
+                type: string
+              lifecycle:
+                description: lifecycle is the archive lifecycle state (Active, Archived,
+                  Deletable).
                 type: string
               ready:
                 description: ready indicates whether the cache is fully available.

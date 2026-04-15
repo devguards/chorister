@@ -57,6 +57,18 @@ type ChoCacheStatus struct {
 	// compiledWithRevision is the controller revision that compiled this resource.
 	// +optional
 	CompiledWithRevision string `json:"compiledWithRevision,omitempty"`
+
+	// lifecycle is the archive lifecycle state (Active, Archived, Deletable).
+	// +optional
+	Lifecycle string `json:"lifecycle,omitempty"`
+
+	// archivedAt is the time the resource was archived.
+	// +optional
+	ArchivedAt *metav1.Time `json:"archivedAt,omitempty"`
+
+	// deletableAfter is the earliest time the resource may be permanently deleted.
+	// +optional
+	DeletableAfter *metav1.Time `json:"deletableAfter,omitempty"`
 }
 
 // +kubebuilder:object:root=true

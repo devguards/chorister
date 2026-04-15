@@ -39,12 +39,14 @@ const storageFinalizerName = "chorister.dev/storage-archive"
 // ChoStorageReconciler reconciles a ChoStorage object
 type ChoStorageReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chostorages,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chostorages/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chostorages/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -58,6 +60,16 @@ func (r *ChoStorageReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := ShouldSkipForRevision(ctx, r.Client, r.ControllerRevision, storage.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", storage.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Handle deletion via finalizer

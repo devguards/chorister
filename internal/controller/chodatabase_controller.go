@@ -41,12 +41,14 @@ const dbFinalizerName = "chorister.dev/database-archive"
 // ChoDatabaseReconciler reconciles a ChoDatabase object
 type ChoDatabaseReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -60,6 +62,16 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := ShouldSkipForRevision(ctx, r.Client, r.ControllerRevision, db.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", db.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Handle deletion via finalizer

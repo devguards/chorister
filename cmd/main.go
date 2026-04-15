@@ -198,36 +198,41 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ChoDatabaseReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		ControllerRevision: controllerRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoDatabase")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoQueueReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		ControllerRevision: controllerRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoQueue")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoCacheReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		ControllerRevision: controllerRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoCache")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoStorageReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		ControllerRevision: controllerRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoStorage")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoNetworkReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		ControllerRevision: controllerRevision,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoNetwork")
 		os.Exit(1)

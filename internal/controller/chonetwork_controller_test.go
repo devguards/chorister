@@ -610,4 +610,54 @@ var _ = Describe("ChoNetwork Controller", func() {
 			Expect(readyCondition.Message).To(ContainSubstring("wildcard egress"))
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Gap 2 — Revision filtering on ChoNetwork controller
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Controller revision filtering", func() {
+		It("should skip ChoNetwork in non-matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "network-rev-mismatch",
+					Labels: map[string]string{LabelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "network-rev-mismatch"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-skip-net", Namespace: "network-rev-mismatch"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "myapp",
+					Domain:      "api",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+					},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, network))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have skipped — status untouched
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: network.Name, Namespace: network.Namespace}, network)).To(Succeed())
+			Expect(network.Status.Ready).To(BeFalse())
+			Expect(network.Status.Conditions).To(BeEmpty())
+		})
+	})
 })

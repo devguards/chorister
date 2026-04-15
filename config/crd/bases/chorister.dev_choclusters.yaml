@@ -92,6 +92,30 @@ spec:
                           hour.
                         pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                         x-kubernetes-int-or-string: true
+                      postgresLarge:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: postgresLarge is the flat monthly rate for a
+                          large PostgreSQL instance.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      postgresMedium:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: postgresMedium is the flat monthly rate for a
+                          medium PostgreSQL instance.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      postgresSmall:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: postgresSmall is the flat monthly rate for a
+                          small PostgreSQL instance.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
                       storagePerGBMonth:
                         anyOf:
                         - type: integer
@@ -165,6 +189,24 @@ spec:
                   tetragon:
                     type: string
                 type: object
+              revisions:
+                description: revisions defines the blue-green controller revisions
+                  for upgrades.
+                items:
+                  description: ControllerRevisionEntry defines a named controller
+                    revision with a tag.
+                  properties:
+                    name:
+                      description: name is the revision identifier (e.g. "1-4", "1-5").
+                      type: string
+                    tag:
+                      description: tag is the revision tag (e.g. "stable", "canary").
+                      type: string
+                  required:
+                  - name
+                  - tag
+                  type: object
+                type: array
               sizingTemplates:
                 additionalProperties:
                   description: SizingTemplateSet defines named sizing templates for
@@ -181,12 +223,21 @@ spec:
                             - type: string
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
+                          instances:
+                            description: instances is the number of database instances
+                              (e.g. 1 for single, 2+ for HA).
+                            format: int32
+                            type: integer
                           memory:
                             anyOf:
                             - type: integer
                             - type: string
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
+                          replicas:
+                            description: replicas is the number of queue/cache replicas.
+                            format: int32
+                            type: integer
                           storage:
                             anyOf:
                             - type: integer

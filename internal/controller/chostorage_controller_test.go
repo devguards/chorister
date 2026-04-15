@@ -21,9 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,6 +88,54 @@ var _ = Describe("ChoStorage Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 2 — Revision filtering on ChoStorage controller
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Controller revision filtering", func() {
+		It("should skip ChoStorage in non-matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "storage-rev-mismatch",
+					Labels: map[string]string{LabelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "storage-rev-mismatch"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			storageSize := resource.MustParse("5Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-skip-storage", Namespace: "storage-rev-mismatch"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Variant:     "object",
+					Size:        &storageSize,
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, storage))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, storage) }()
+
+			reconciler := &ChoStorageReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have skipped — status untouched
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
+			Expect(storage.Status.Ready).To(BeFalse())
 		})
 	})
 })

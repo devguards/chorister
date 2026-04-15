@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -206,6 +207,53 @@ var _ = Describe("ChoCache Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace}, cache)).To(Succeed())
 			Expect(cache.Status.Ready).To(BeTrue())
 			Expect(cache.Status.CredentialsSecretRef).To(Equal("auth--cache--sessions-status-credentials"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 2 — Revision filtering on ChoCache controller
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Controller revision filtering", func() {
+		It("should skip ChoCache in non-matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "cache-rev-mismatch",
+					Labels: map[string]string{LabelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cache-rev-mismatch"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			cache := &choristerv1alpha1.ChoCache{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-skip-cache", Namespace: "cache-rev-mismatch"},
+				Spec: choristerv1alpha1.ChoCacheSpec{
+					Application: "myapp",
+					Domain:      "auth",
+					Size:        "small",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, cache))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cache) }()
+
+			reconciler := &ChoCacheReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have skipped — no StatefulSet created
+			sts := &appsv1.StatefulSet{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: cache.Name, Namespace: cache.Namespace}, sts)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no StatefulSet when revision mismatches")
 		})
 	})
 })

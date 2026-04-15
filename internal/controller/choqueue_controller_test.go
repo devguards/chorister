@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -187,6 +188,53 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(queue.Status.Ready).To(BeTrue())
 			Expect(queue.Status.Lifecycle).To(Equal("Active"))
 			Expect(queue.Status.CredentialsSecretRef).To(Equal("payments--queue--events-status-credentials"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 2 — Revision filtering on ChoQueue controller
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Controller revision filtering", func() {
+		It("should skip ChoQueue in non-matching-revision namespace", func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "queue-rev-mismatch",
+					Labels: map[string]string{LabelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "queue-rev-mismatch"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[LabelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-skip-queue", Namespace: "queue-rev-mismatch"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, queue))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have skipped — no StatefulSet created
+			sts := &appsv1.StatefulSet{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, sts)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no StatefulSet when revision mismatches")
 		})
 	})
 })

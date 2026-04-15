@@ -74,15 +74,18 @@ var cacheSizeMap = map[string]corev1.ResourceRequirements{
 // ChoCacheReconciler reconciles a ChoCache object
 type ChoCacheReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocaches,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocaches/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocaches/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile moves the cluster state to match the desired ChoCache spec.
 func (r *ChoCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -94,6 +97,16 @@ func (r *ChoCacheReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := ShouldSkipForRevision(ctx, r.Client, r.ControllerRevision, cache.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", cache.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Reconcile the Dragonfly Deployment

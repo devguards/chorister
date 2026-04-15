@@ -87,6 +87,19 @@ spec:
                       items:
                         type: string
                       type: array
+                    sandbox:
+                      description: sandbox defines domain-level sandbox policy overrides.
+                      properties:
+                        budget:
+                          description: budget is the monthly cost budget for this
+                            domain's sandboxes (e.g. 1000 = $1000/month).
+                          format: int64
+                          type: integer
+                        maxIdleDays:
+                          description: maxIdleDays overrides the max idle days for
+                            this domain.
+                          type: integer
+                      type: object
                     sensitivity:
                       default: internal
                       description: sensitivity is the data sensitivity level.
@@ -330,14 +343,17 @@ spec:
                   sandbox:
                     description: sandbox defines sandbox lifecycle policy.
                     properties:
+                      budgetAlertThreshold:
+                        description: budgetAlertThreshold is the percentage of budget
+                          usage that triggers an alert (e.g. 80).
+                        maximum: 100
+                        minimum: 1
+                        type: integer
                       defaultBudgetPerDomain:
-                        anyOf:
-                        - type: integer
-                        - type: string
                         description: defaultBudgetPerDomain is the default monthly
-                          budget per domain for sandbox costs.
-                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                        x-kubernetes-int-or-string: true
+                          cost budget per domain (e.g. 500 = $500/month).
+                        format: int64
+                        type: integer
                       maxIdleDays:
                         description: maxIdleDays is the maximum number of days a sandbox
                           can be idle before auto-destroy.
@@ -421,9 +437,57 @@ spec:
                 description: domainNamespaces maps domain names to their namespace
                   names.
                 type: object
+              egressHealth:
+                additionalProperties:
+                  description: EgressHealthStatus reports health of an egress destination.
+                  properties:
+                    errorRate:
+                      description: errorRate is the observed error rate percentage.
+                      type: string
+                    lastChecked:
+                      description: lastChecked is when the health was last evaluated.
+                      format: date-time
+                      type: string
+                    status:
+                      description: status is the health state (Healthy, Degraded,
+                        Unreachable).
+                      type: string
+                  required:
+                  - status
+                  type: object
+                description: egressHealth summarizes per-FQDN egress health from Hubble
+                  metrics.
+                type: object
               phase:
                 description: phase is the high-level phase of the application.
                 type: string
+              sandboxSummary:
+                additionalProperties:
+                  description: DomainSandboxSummary contains aggregated sandbox budget
+                    info for a domain.
+                  properties:
+                    activeSandboxes:
+                      description: activeSandboxes is the number of active sandboxes.
+                      type: integer
+                    budget:
+                      description: budget is the sandbox budget for this domain.
+                      type: string
+                    budgetUsagePercent:
+                      description: budgetUsagePercent is the percentage of budget
+                        used.
+                      type: integer
+                    estimatedMonthlyCost:
+                      description: estimatedMonthlyCost is the total estimated monthly
+                        cost of all sandboxes.
+                      type: string
+                  required:
+                  - activeSandboxes
+                  - budget
+                  - budgetUsagePercent
+                  - estimatedMonthlyCost
+                  type: object
+                description: sandboxSummary contains domain-level sandbox budget aggregation.
+                type: object
             type: object
         type: object
     served: true

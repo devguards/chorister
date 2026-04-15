@@ -43,16 +43,19 @@ import (
 // ChoNetworkReconciler reconciles a ChoNetwork object
 type ChoNetworkReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chonetworks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile moves the cluster state to match the desired ChoNetwork spec.
 func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -64,6 +67,16 @@ func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := ShouldSkipForRevision(ctx, r.Client, r.ControllerRevision, network.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", network.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Compile-time guardrails: validate ingress auth and egress wildcard
