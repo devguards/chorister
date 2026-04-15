@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -252,8 +253,15 @@ func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
 		t.Fatalf("error should mention required flags, got: %s", err.Error())
 	}
 
+	s := testScheme()
+	cluster := &choristerv1alpha1.ChoCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "chorister-cluster", Namespace: "default"},
+		Spec:       choristerv1alpha1.ChoClusterSpec{ControllerRevision: "v1.0.0"},
+	}
+
 	// --revision deploys a canary
-	out, err := executeCmd("admin", "upgrade", "--revision", "v2.0.0")
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(cluster.DeepCopy()).Build()
+	out, err := executeCmdWithClient(fc, "admin", "upgrade", "--revision", "v2.0.0")
 	if err != nil {
 		t.Fatalf("--revision should not error: %v", err)
 	}
@@ -261,8 +269,11 @@ func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
 		t.Fatalf("output should mention canary and revision, got: %s", out)
 	}
 
-	// --promote makes a revision stable
-	out, err = executeCmd("admin", "upgrade", "--promote", "v2.0.0")
+	// --promote makes a revision stable (start with a canary already set)
+	clusterWithCanary := cluster.DeepCopy()
+	clusterWithCanary.Annotations = map[string]string{"chorister.dev/canary-revision": "v2.0.0"}
+	fc2 := fake.NewClientBuilder().WithScheme(s).WithObjects(clusterWithCanary).Build()
+	out, err = executeCmdWithClient(fc2, "admin", "upgrade", "--promote", "v2.0.0")
 	if err != nil {
 		t.Fatalf("--promote should not error: %v", err)
 	}
@@ -271,7 +282,8 @@ func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
 	}
 
 	// --rollback removes a canary
-	out, err = executeCmd("admin", "upgrade", "--rollback", "v2.0.0")
+	fc3 := fake.NewClientBuilder().WithScheme(s).WithObjects(clusterWithCanary.DeepCopy()).Build()
+	out, err = executeCmdWithClient(fc3, "admin", "upgrade", "--rollback", "v2.0.0")
 	if err != nil {
 		t.Fatalf("--rollback should not error: %v", err)
 	}
@@ -1008,7 +1020,25 @@ func TestCLI_AdminVulnGet_RequiresApp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLI_AdminScan(t *testing.T) {
-	out, err := executeCmd("admin", "scan", "--app", "myproduct", "--domain", "payments")
+	s := testScheme()
+	_ = batchv1.AddToScheme(s)
+
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "standard")
+	app.Status.DomainNamespaces = map[string]string{"payments": "myproduct-payments"}
+
+	cronJob := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vulnerability-scan",
+			Namespace: "myproduct-payments",
+		},
+	}
+
+	fc := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(app, cronJob).
+		WithStatusSubresource(app).
+		Build()
+
+	out, err := executeCmdWithClient(fc, "admin", "scan", "--app", "myproduct", "--domain", "payments")
 	if err != nil {
 		t.Fatalf("admin scan error: %v", err)
 	}

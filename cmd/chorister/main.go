@@ -24,7 +24,10 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
+	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
@@ -1331,9 +1334,29 @@ func newAdminIsolateCmd() *cobra.Command {
 				return fmt.Errorf("--app is required")
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Isolating domain %s in application %s\n", domainName, app)
-			fmt.Fprintf(cmd.OutOrStdout(), "Setting annotation chorister.dev/isolate-%s=true\n", domainName)
-			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s is now isolated: promotions blocked, network tightened\n", domainName)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			choApp, err := q.GetApplication(cmd.Context(), app)
+			if err != nil {
+				return err
+			}
+
+			annotationKey := fmt.Sprintf("chorister.dev/isolate-%s", domainName)
+			patch := client.MergeFrom(choApp.DeepCopy())
+			if choApp.Annotations == nil {
+				choApp.Annotations = make(map[string]string)
+			}
+			choApp.Annotations[annotationKey] = "true"
+			if err := c.Patch(cmd.Context(), choApp, patch); err != nil {
+				return fmt.Errorf("patch ChoApplication %s: %w", app, err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s in application %s is now isolated.\n", domainName, app)
+			fmt.Fprintf(cmd.OutOrStdout(), "Annotation %s=true set. The controller will tighten network policies and block promotions.\n", annotationKey)
 			return nil
 		},
 	}
@@ -1355,9 +1378,31 @@ func newAdminUnisolateCmd() *cobra.Command {
 				return fmt.Errorf("--app is required")
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Unisolating domain %s in application %s\n", domainName, app)
-			fmt.Fprintf(cmd.OutOrStdout(), "Removing annotation chorister.dev/isolate-%s\n", domainName)
-			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s is restored: promotions unblocked, network policies reverted\n", domainName)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			choApp, err := q.GetApplication(cmd.Context(), app)
+			if err != nil {
+				return err
+			}
+
+			annotationKey := fmt.Sprintf("chorister.dev/isolate-%s", domainName)
+			if choApp.Annotations == nil || choApp.Annotations[annotationKey] == "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Domain %s in application %s is not currently isolated.\n", domainName, app)
+				return nil
+			}
+
+			patch := client.MergeFrom(choApp.DeepCopy())
+			delete(choApp.Annotations, annotationKey)
+			if err := c.Patch(cmd.Context(), choApp, patch); err != nil {
+				return fmt.Errorf("patch ChoApplication %s: %w", app, err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s in application %s is now restored.\n", domainName, app)
+			fmt.Fprintf(cmd.OutOrStdout(), "Annotation %s removed. The controller will revert network policies and unblock promotions.\n", annotationKey)
 			return nil
 		},
 	}
@@ -1445,9 +1490,22 @@ func newAdminResourceCmd() *cobra.Command {
 				return fmt.Errorf("--namespace is required. Specify the production namespace containing the archived resource")
 			}
 
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			obj, err := q.GetResource(cmd.Context(), resourceType, archived, namespace)
+			if err != nil {
+				return fmt.Errorf("get %s %q in namespace %q: %w", resourceType, archived, namespace, err)
+			}
+
 			fmt.Fprintf(cmd.OutOrStdout(), "Deleting archived %s %q in namespace %q\n", resourceType, archived, namespace)
-			fmt.Fprintf(cmd.OutOrStdout(), "Taking final snapshot before deletion...\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Archived %s %q deleted successfully. Audit event recorded.\n", resourceType, archived)
+			if err := c.Delete(cmd.Context(), obj); err != nil {
+				return fmt.Errorf("delete %s %q: %w", resourceType, archived, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Archived %s %q deleted successfully.\n", resourceType, archived)
 			return nil
 		},
 	}
@@ -1464,7 +1522,12 @@ func newAdminUpgradeCmd() *cobra.Command {
 		Use:   "upgrade",
 		Short: "Manage controller upgrades (blue-green)",
 		Long: `Manage blue-green controller upgrades. Use --revision to deploy a new canary controller,
---promote to make a revision the stable default, or --rollback to remove a canary revision.`,
+--promote to make a revision the stable default, or --rollback to remove a canary revision.
+
+--revision sets the chorister.dev/canary-revision annotation on ChoCluster; the controller
+deploys a canary instance alongside the stable one.
+--promote updates spec.controllerRevision and clears the canary annotation.
+--rollback removes the canary annotation without changing the stable revision.`,
 		Example: `  chorister admin upgrade --revision v1.3.0
   chorister admin upgrade --promote v1.3.0
   chorister admin upgrade --rollback v1.3.0`,
@@ -1473,26 +1536,60 @@ func newAdminUpgradeCmd() *cobra.Command {
 			promote, _ := cmd.Flags().GetString("promote")
 			rollback, _ := cmd.Flags().GetString("rollback")
 
+			if revision == "" && promote == "" && rollback == "" {
+				return fmt.Errorf("one of --revision, --promote, or --rollback is required")
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			cluster, err := q.GetCluster(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("get ChoCluster: %w", err)
+			}
+
+			patch := client.MergeFrom(cluster.DeepCopy())
+			if cluster.Annotations == nil {
+				cluster.Annotations = make(map[string]string)
+			}
+
 			switch {
 			case revision != "":
-				fmt.Fprintf(cmd.OutOrStdout(), "Deploying canary controller revision %q\n", revision)
-				fmt.Fprintf(cmd.OutOrStdout(), "Canary revision %q deployed. Use --promote %s to make it stable.\n", revision, revision)
+				cluster.Annotations["chorister.dev/canary-revision"] = revision
+				if err := c.Patch(cmd.Context(), cluster, patch); err != nil {
+					return fmt.Errorf("set canary revision on ChoCluster: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Deployed canary revision %q alongside stable %q.\n", revision, cluster.Spec.ControllerRevision)
+				fmt.Fprintf(cmd.OutOrStdout(), "Use --promote %s to make it the stable default when ready.\n", revision)
 			case promote != "":
-				fmt.Fprintf(cmd.OutOrStdout(), "Promoting revision %q to stable\n", promote)
-				fmt.Fprintf(cmd.OutOrStdout(), "Updating ChoCluster.spec.controllerRevision to %q\n", promote)
-				fmt.Fprintf(cmd.OutOrStdout(), "Retagging all namespaces to revision %q\n", promote)
-				fmt.Fprintf(cmd.OutOrStdout(), "Revision %q is now the stable default.\n", promote)
+				cluster.Spec.ControllerRevision = promote
+				delete(cluster.Annotations, "chorister.dev/canary-revision")
+				if err := c.Patch(cmd.Context(), cluster, patch); err != nil {
+					return fmt.Errorf("promote revision on ChoCluster: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Revision %q is now the stable default (spec.controllerRevision updated).\n", promote)
 			case rollback != "":
-				fmt.Fprintf(cmd.OutOrStdout(), "Rolling back canary revision %q\n", rollback)
-				fmt.Fprintf(cmd.OutOrStdout(), "Canary revision %q removed.\n", rollback)
-			default:
-				return fmt.Errorf("one of --revision, --promote, or --rollback is required")
+				canary := cluster.Annotations["chorister.dev/canary-revision"]
+				if canary == "" {
+					return fmt.Errorf("no canary revision is currently deployed")
+				}
+				if canary != rollback {
+					return fmt.Errorf("canary revision is %q, not %q", canary, rollback)
+				}
+				delete(cluster.Annotations, "chorister.dev/canary-revision")
+				if err := c.Patch(cmd.Context(), cluster, patch); err != nil {
+					return fmt.Errorf("remove canary revision from ChoCluster: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Canary revision %q removed. Stable revision remains %q.\n", rollback, cluster.Spec.ControllerRevision)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().String("revision", "", "Deploy a new controller revision")
-	cmd.Flags().String("promote", "", "Promote a revision to stable")
+	cmd.Flags().String("revision", "", "Deploy a new controller revision as canary")
+	cmd.Flags().String("promote", "", "Promote a canary revision to stable")
 	cmd.Flags().String("rollback", "", "Remove a canary revision")
 	return cmd
 }
@@ -2203,21 +2300,62 @@ func newAdminScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "scan",
 		Short: "Trigger on-demand vulnerability scan",
-		Long:  `Triggers an immediate vulnerability scan for one or all domains in an application by annotating the scan CronJob. Results appear in ChoVulnerabilityReport.`,
+		Long:  `Triggers an immediate vulnerability scan for one or all domains in an application by annotating the scan CronJob with kubectl.kubernetes.io/trigger-at. Results appear in ChoVulnerabilityReport.`,
 		Example: `  chorister admin scan --app myproduct
   chorister admin scan --app myproduct --domain payments`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, _ := cmd.Flags().GetString("app")
-			domain, _ := cmd.Flags().GetString("domain")
+			domainFilter, _ := cmd.Flags().GetString("domain")
 
 			if app == "" {
 				return fmt.Errorf("--app is required")
 			}
 
-			if domain != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Triggered vulnerability scan for domain %s in application %s\n", domain, app)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "Triggered vulnerability scan for all domains in application %s\n", app)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			domains, err := q.ListDomainsByApp(cmd.Context(), app)
+			if err != nil {
+				return err
+			}
+
+			triggerTime := time.Now().UTC().Format(time.RFC3339)
+			triggered := 0
+			for _, d := range domains {
+				if domainFilter != "" && d.Name != domainFilter {
+					continue
+				}
+				if d.Namespace == "" {
+					continue
+				}
+
+				cronJob := &batchv1.CronJob{}
+				key := types.NamespacedName{Name: "vulnerability-scan", Namespace: d.Namespace}
+				if err := c.Get(cmd.Context(), key, cronJob); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  Warning: no scan CronJob found in namespace %s (domain %s may not have compliance>=standard)\n", d.Namespace, d.Name)
+					continue
+				}
+
+				patch := client.MergeFrom(cronJob.DeepCopy())
+				if cronJob.Annotations == nil {
+					cronJob.Annotations = make(map[string]string)
+				}
+				cronJob.Annotations["kubectl.kubernetes.io/trigger-at"] = triggerTime
+				if err := c.Patch(cmd.Context(), cronJob, patch); err != nil {
+					return fmt.Errorf("annotate CronJob in namespace %s: %w", d.Namespace, err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Triggered vulnerability scan for domain %s (namespace %s)\n", d.Name, d.Namespace)
+				triggered++
+			}
+
+			if triggered == 0 {
+				if domainFilter != "" {
+					return fmt.Errorf("domain %q not found or has no scan CronJob in application %s", domainFilter, app)
+				}
+				return fmt.Errorf("no scan CronJobs found in application %s (compliance must be standard or regulated)", app)
 			}
 			return nil
 		},
