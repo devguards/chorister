@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,13 +26,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
-	"github.com/chorister-dev/chorister/internal/compiler"
 	"github.com/chorister-dev/chorister/internal/query"
 	"github.com/chorister-dev/chorister/internal/report"
 )
@@ -202,6 +203,8 @@ func newSandboxCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			name, _ := cmd.Flags().GetString("name")
+			app, _ := cmd.Flags().GetString("app")
+			owner, _ := cmd.Flags().GetString("owner")
 
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
@@ -210,12 +213,51 @@ func newSandboxCreateCmd() *cobra.Command {
 				return fmt.Errorf("--name is required")
 			}
 
-			fmt.Printf("sandbox create: domain=%s name=%s (not yet implemented)\n", domain, name)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			if owner == "" {
+				owner = "cli-user"
+			}
+
+			sb := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: app + "-" + domain + "-",
+					Namespace:    "default",
+				},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: app,
+					Domain:      domain,
+					Name:        name,
+					Owner:       owner,
+				},
+			}
+			if err := c.Create(cmd.Context(), sb); err != nil {
+				return fmt.Errorf("create ChoSandbox: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Sandbox %q created for domain %s in application %s (namespace will be provisioned by controller)\n", name, domain, app)
 			return nil
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
 	cmd.Flags().StringP("name", "n", "", "Sandbox name")
+	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().String("owner", "", "Sandbox owner identity (defaults to cli-user)")
 	return cmd
 }
 
@@ -229,6 +271,7 @@ func newSandboxDestroyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			name, _ := cmd.Flags().GetString("name")
+			app, _ := cmd.Flags().GetString("app")
 
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
@@ -237,12 +280,51 @@ func newSandboxDestroyCmd() *cobra.Command {
 				return fmt.Errorf("--name is required")
 			}
 
-			fmt.Printf("sandbox destroy: domain=%s name=%s (not yet implemented)\n", domain, name)
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			var list choristerv1alpha1.ChoSandboxList
+			if err := c.List(cmd.Context(), &list); err != nil {
+				return fmt.Errorf("list ChoSandboxes: %w", err)
+			}
+
+			var target *choristerv1alpha1.ChoSandbox
+			for i := range list.Items {
+				sb := &list.Items[i]
+				if sb.Spec.Application == app && sb.Spec.Domain == domain && sb.Spec.Name == name {
+					target = sb
+					break
+				}
+			}
+			if target == nil {
+				return fmt.Errorf("sandbox %q not found in domain %s of application %s", name, domain, app)
+			}
+
+			if err := c.Delete(cmd.Context(), target); err != nil {
+				return fmt.Errorf("delete ChoSandbox: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Sandbox %q deleted from domain %s in application %s (controller will clean up namespace)\n", name, domain, app)
 			return nil
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
 	cmd.Flags().StringP("name", "n", "", "Sandbox name")
+	cmd.Flags().String("app", "", "Application name")
 	return cmd
 }
 
@@ -679,15 +761,7 @@ func newAdminAppCmd() *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "set-policy [name]",
-			Short: "Update application policy",
-			Args:  cobra.ExactArgs(1),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Printf("admin app set-policy: %s (not yet implemented)\n", args[0])
-				return nil
-			},
-		},
+		newAdminAppSetPolicyCmd(),
 	)
 	return cmd
 }
@@ -814,6 +888,77 @@ func newAdminAppDeleteCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("confirm", false, "Confirm deletion")
 	cmd.Flags().Bool("dry-run", false, "Show what would be deleted without making changes")
+	return cmd
+}
+
+func newAdminAppSetPolicyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set-policy <name>",
+		Short: "Update application policy",
+		Long:  `Updates the policy for a ChoApplication. Only flags that are explicitly set are changed; unspecified fields retain their current values.`,
+		Example: `  chorister admin app set-policy myproduct --compliance standard
+  chorister admin app set-policy myproduct --required-approvers 2 --require-security-scan
+  chorister admin app set-policy myproduct --max-idle-days 7 --archive-retention 90d`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appName := args[0]
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			app, err := q.GetApplication(cmd.Context(), appName)
+			if err != nil {
+				return err
+			}
+
+			changed := false
+			if cmd.Flags().Changed("compliance") {
+				v, _ := cmd.Flags().GetString("compliance")
+				app.Spec.Policy.Compliance = v
+				changed = true
+			}
+			if cmd.Flags().Changed("required-approvers") {
+				v, _ := cmd.Flags().GetInt("required-approvers")
+				app.Spec.Policy.Promotion.RequiredApprovers = v
+				changed = true
+			}
+			if cmd.Flags().Changed("require-security-scan") {
+				v, _ := cmd.Flags().GetBool("require-security-scan")
+				app.Spec.Policy.Promotion.RequireSecurityScan = v
+				changed = true
+			}
+			if cmd.Flags().Changed("archive-retention") {
+				v, _ := cmd.Flags().GetString("archive-retention")
+				app.Spec.Policy.ArchiveRetention = v
+				changed = true
+			}
+			if cmd.Flags().Changed("max-idle-days") {
+				v, _ := cmd.Flags().GetInt("max-idle-days")
+				if app.Spec.Policy.Sandbox == nil {
+					app.Spec.Policy.Sandbox = &choristerv1alpha1.SandboxPolicy{}
+				}
+				app.Spec.Policy.Sandbox.MaxIdleDays = &v
+				changed = true
+			}
+
+			if !changed {
+				return fmt.Errorf("no policy flags specified; use --compliance, --required-approvers, --require-security-scan, --archive-retention, or --max-idle-days")
+			}
+
+			if err := c.Update(cmd.Context(), app); err != nil {
+				return fmt.Errorf("update ChoApplication %s: %w", appName, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Policy updated for application %s\n", appName)
+			return nil
+		},
+	}
+	cmd.Flags().String("compliance", "", "Compliance profile: essential, standard, regulated")
+	cmd.Flags().Int("required-approvers", 0, "Number of required promotion approvers")
+	cmd.Flags().Bool("require-security-scan", false, "Gate promotion on security scan results")
+	cmd.Flags().String("archive-retention", "", "Archive retention duration (e.g. 30d, 90d, 1y)")
+	cmd.Flags().Int("max-idle-days", 0, "Maximum sandbox idle days before auto-destroy")
 	return cmd
 }
 
@@ -1885,7 +2030,9 @@ func newAdminExportConfigCmd() *cobra.Command {
 
 			// Export ChoApplication
 			appFile := filepath.Join(outputDir, appName+"-application.yaml")
-			appBytes, err := marshalCRD(app)
+			app.TypeMeta = metav1.TypeMeta{APIVersion: "chorister.dev/v1alpha1", Kind: "ChoApplication"}
+			cleanExportMeta(&app.ObjectMeta)
+			appBytes, err := yaml.Marshal(app)
 			if err != nil {
 				return fmt.Errorf("marshal application: %w", err)
 			}
@@ -1894,26 +2041,36 @@ func newAdminExportConfigCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Exported: %s\n", appFile)
 
-			// Export memberships
-			members, err := q.ListMemberships(cmd.Context(), query.MemberFilter{App: appName, IncludeExpired: false})
-			if err != nil {
-				return fmt.Errorf("list memberships: %w", err)
+			// Export memberships - fetch full CRDs directly.
+			var memberList choristerv1alpha1.ChoDomainMembershipList
+			if lerr := c.List(cmd.Context(), &memberList); lerr != nil {
+				return fmt.Errorf("list memberships: %w", lerr)
 			}
-			if len(members) > 0 {
+			var activeMembers []choristerv1alpha1.ChoDomainMembership
+			for _, m := range memberList.Items {
+				if m.Spec.Application == appName {
+					activeMembers = append(activeMembers, m)
+				}
+			}
+			if len(activeMembers) > 0 {
 				membersFile := filepath.Join(outputDir, appName+"-memberships.yaml")
 				var allMemberBytes []byte
-				for _, m := range members {
-					// We need to re-fetch to get full CRD object
-					_ = m // membership info doesn't include the raw CRD; note for future
-				}
-				if len(allMemberBytes) > 0 {
-					if err := os.WriteFile(membersFile, allMemberBytes, 0600); err != nil {
-						return fmt.Errorf("write memberships YAML: %w", err)
+				for i, m := range activeMembers {
+					m.TypeMeta = metav1.TypeMeta{APIVersion: "chorister.dev/v1alpha1", Kind: "ChoDomainMembership"}
+					cleanExportMeta(&m.ObjectMeta)
+					data, merr := yaml.Marshal(m)
+					if merr != nil {
+						return fmt.Errorf("marshal membership %s: %w", m.Name, merr)
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "Exported: %s\n", membersFile)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Skipped memberships (export of raw CRD objects coming in a future version)\n")
+					if i > 0 {
+						allMemberBytes = append(allMemberBytes, []byte("---\n")...)
+					}
+					allMemberBytes = append(allMemberBytes, data...)
 				}
+				if err := os.WriteFile(membersFile, allMemberBytes, 0600); err != nil {
+					return fmt.Errorf("write memberships YAML: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Exported: %s (%d membership(s))\n", membersFile, len(activeMembers))
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Export complete: %s\n", outputDir)
@@ -1923,11 +2080,6 @@ func newAdminExportConfigCmd() *cobra.Command {
 	cmd.Flags().String("app", "", "Application name (required)")
 	cmd.Flags().String("output-dir", "./backup", "Directory to write exported YAML files")
 	return cmd
-}
-
-// marshalCRD serializes a K8s object to YAML.
-func marshalCRD(obj interface{}) ([]byte, error) {
-	return yaml.Marshal(obj)
 }
 
 // --- admin cluster (CLI-2) ---
@@ -2090,6 +2242,7 @@ Always targets a sandbox — use kubectl for production log access.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
 			sandbox, _ := cmd.Flags().GetString("sandbox")
+			app, _ := cmd.Flags().GetString("app")
 
 			if sandbox == "" {
 				return fmt.Errorf("--sandbox is required: logs always target a sandbox. Use kubectl for production logs")
@@ -2098,19 +2251,94 @@ Always targets a sandbox — use kubectl for production log access.`,
 				return fmt.Errorf("--domain is required")
 			}
 
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+			q := query.NewQuerier(c)
+
+			if app == "" {
+				apps, qerr := q.ListApplications(cmd.Context())
+				if qerr != nil {
+					return qerr
+				}
+				if len(apps) == 1 {
+					app = apps[0].Name
+				} else {
+					return fmt.Errorf("--app is required when multiple applications exist")
+				}
+			}
+
+			// Get sandbox namespace from ChoSandbox status.
+			detail, err := q.GetSandbox(cmd.Context(), app, domain, sandbox)
+			if err != nil {
+				return fmt.Errorf("get sandbox: %w", err)
+			}
+			if detail.Namespace == "" {
+				return fmt.Errorf("sandbox %q has no namespace yet (controller may still be provisioning)", sandbox)
+			}
+			ns := detail.Namespace
+
+			cs, err := getKubeClientset(cmd)
+			if err != nil {
+				return err
+			}
+
+			follow, _ := cmd.Flags().GetBool("follow")
+			tail, _ := cmd.Flags().GetInt64("tail")
+			previous, _ := cmd.Flags().GetBool("previous")
+			container, _ := cmd.Flags().GetString("container")
+
+			// Build label selector: narrow to component if arg provided.
+			labelSelector := "chorister.dev/component"
+			if len(args) > 0 {
+				labelSelector = "chorister.dev/component=" + args[0]
+			}
+
+			podList, err := cs.CoreV1().Pods(ns).List(cmd.Context(), metav1.ListOptions{
+				LabelSelector: labelSelector,
+			})
+			if err != nil {
+				return fmt.Errorf("list pods in %s: %w", ns, err)
+			}
+
+			// No component arg: list available components and exit.
 			if len(args) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No component specified. Available components can be listed with:")
-				fmt.Fprintf(cmd.OutOrStdout(), "  kubectl get pods -n <sandbox-namespace> -l chorister.dev/component\n")
+				if len(podList.Items) == 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "No components found in sandbox %q (namespace %s)\n", sandbox, ns)
+					return nil
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Available components in sandbox %q:\n", sandbox)
+				seen := make(map[string]bool)
+				for _, pod := range podList.Items {
+					comp := pod.Labels["chorister.dev/component"]
+					if comp != "" && !seen[comp] {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", comp)
+						seen[comp] = true
+					}
+				}
 				return nil
 			}
 
-			component := args[0]
-			follow, _ := cmd.Flags().GetBool("follow")
-			tail, _ := cmd.Flags().GetInt64("tail")
+			if len(podList.Items) == 0 {
+				return fmt.Errorf("no pods found for component %q in sandbox %q (namespace %s)", args[0], sandbox, ns)
+			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "logs: domain=%s sandbox=%s component=%s follow=%v tail=%d (streaming not yet implemented — requires kubernetes.Interface)\n",
-				domain, sandbox, component, follow, tail)
-			return nil
+			podName := podList.Items[0].Name
+			logOpts := &corev1.PodLogOptions{
+				Follow:    follow,
+				Previous:  previous,
+				Container: container,
+				TailLines: &tail,
+			}
+			stream, err := cs.CoreV1().Pods(ns).GetLogs(podName, logOpts).Stream(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("stream logs from pod %s: %w", podName, err)
+			}
+			defer stream.Close()
+
+			_, err = io.Copy(cmd.OutOrStdout(), stream)
+			return err
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
@@ -2378,48 +2606,64 @@ func parseDuration(s string) (time.Duration, error) {
 func newExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export compiled Blueprint as static YAML for GitOps",
-		Long:  `Compiles domain resources and writes them as static Kubernetes YAML manifests to a directory. Useful for GitOps workflows or environments without the chorister operator installed.`,
+		Short: "Export domain Cho CRDs as static YAML for GitOps",
+		Long:  `Fetches all Cho CRDs from a live domain namespace and writes them as static YAML manifests to a directory. Suitable for backup, cluster migration, or GitOps workflows.`,
 		Example: `  chorister export --domain payments
-  chorister export --domain payments --output ./gitops/payments`,
+  chorister export --domain payments --app myproduct --output ./gitops/payments`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain, _ := cmd.Flags().GetString("domain")
+			appName, _ := cmd.Flags().GetString("app")
 			output, _ := cmd.Flags().GetString("output")
 
 			if domain == "" {
 				return fmt.Errorf("--domain is required")
 			}
-
-			return runExport(cmd, domain, output)
+			return runExport(cmd, appName, domain, output)
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
+	cmd.Flags().String("app", "", "Application name")
 	cmd.Flags().StringP("output", "o", "./export", "Output directory")
 	return cmd
 }
 
-func runExport(cmd *cobra.Command, domain, outputDir string) error {
-	// Compile the domain manifests using the compiler
-	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "export"},
-		Spec: choristerv1alpha1.ChoApplicationSpec{
-			Domains: []choristerv1alpha1.DomainSpec{
-				{Name: domain},
-			},
-		},
+func runExport(cmd *cobra.Command, appName, domain, outputDir string) error {
+	c, err := getClient(cmd)
+	if err != nil {
+		return err
+	}
+	q := query.NewQuerier(c)
+
+	// Resolve app.
+	if appName == "" {
+		apps, qerr := q.ListApplications(cmd.Context())
+		if qerr != nil {
+			return qerr
+		}
+		if len(apps) == 1 {
+			appName = apps[0].Name
+		} else {
+			return fmt.Errorf("--app is required when multiple applications exist")
+		}
 	}
 
-	var manifests [][]byte
+	// Find domain namespace from ChoApplication status.
+	choApp, err := q.GetApplication(cmd.Context(), appName)
+	if err != nil {
+		return err
+	}
+	ns := ""
+	if choApp.Status.DomainNamespaces != nil {
+		ns = choApp.Status.DomainNamespaces[domain]
+	}
+	if ns == "" {
+		return fmt.Errorf("domain %q in application %q has no namespace (controller may not have reconciled it yet)", domain, appName)
+	}
 
-	// Compile network policy for restricted domains
-	domainSpec := app.Spec.Domains[0]
-	if domainSpec.Sensitivity == "restricted" {
-		obj := compiler.CompileRestrictedDomainL7Policy(app, domainSpec)
-		data, err := yaml.Marshal(obj.Object)
-		if err != nil {
-			return fmt.Errorf("marshal restricted policy: %w", err)
-		}
-		manifests = append(manifests, data)
+	// List all Cho CRDs in the domain namespace.
+	resources, err := q.ListDomainResources(cmd.Context(), ns)
+	if err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(outputDir, 0o750); err != nil {
@@ -2428,24 +2672,89 @@ func runExport(cmd *cobra.Command, domain, outputDir string) error {
 
 	outputPath := filepath.Join(outputDir, domain+".yaml")
 	var buf []byte
-	for i, m := range manifests {
-		if i > 0 {
-			buf = append(buf, []byte("---\n")...)
+	sep := []byte("---\n")
+
+	const apiVersion = "chorister.dev/v1alpha1"
+	appendYAML := func(kind string, obj interface{}) error {
+		data, merr := yaml.Marshal(obj)
+		if merr != nil {
+			return fmt.Errorf("marshal %s: %w", kind, merr)
 		}
-		buf = append(buf, m...)
+		if len(buf) > 0 {
+			buf = append(buf, sep...)
+		}
+		buf = append(buf, data...)
+		return nil
 	}
 
-	// Even if no manifests were compiled, produce an empty file with a comment
+	for i := range resources.Computes {
+		r := resources.Computes[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoCompute"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoCompute", r); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Databases {
+		r := resources.Databases[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoDatabase"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoDatabase", r); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Queues {
+		r := resources.Queues[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoQueue"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoQueue", r); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Caches {
+		r := resources.Caches[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoCache"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoCache", r); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Storages {
+		r := resources.Storages[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoStorage"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoStorage", r); err != nil {
+			return err
+		}
+	}
+	for i := range resources.Networks {
+		r := resources.Networks[i]
+		r.TypeMeta = metav1.TypeMeta{APIVersion: apiVersion, Kind: "ChoNetwork"}
+		cleanExportMeta(&r.ObjectMeta)
+		if err := appendYAML("ChoNetwork", r); err != nil {
+			return err
+		}
+	}
+
 	if len(buf) == 0 {
-		buf = []byte(fmt.Sprintf("# chorister export: domain=%s\n# No manifests compiled — domain has no compiled resources.\n", domain))
+		buf = []byte(fmt.Sprintf("# chorister export: app=%s domain=%s namespace=%s\n# No Cho CRDs found in domain namespace.\n", appName, domain, ns))
 	}
 
 	if err := os.WriteFile(outputPath, buf, 0o600); err != nil {
 		return fmt.Errorf("write export: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Exported domain %s to %s\n", domain, outputPath)
+	total := resources.TotalCount()
+	fmt.Fprintf(cmd.OutOrStdout(), "Exported %d resource(s) from domain %s (namespace %s) to %s\n", total, domain, ns, outputPath)
 	return nil
+}
+
+// cleanExportMeta strips runtime-assigned fields that should not be re-applied.
+func cleanExportMeta(meta *metav1.ObjectMeta) {
+	meta.ResourceVersion = ""
+	meta.UID = ""
+	meta.Generation = 0
+	meta.ManagedFields = nil
 }
 
 // --- get <type> <name> (CLI-8.2) ---

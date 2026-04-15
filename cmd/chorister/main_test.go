@@ -30,6 +30,8 @@ import (
 	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -64,6 +66,23 @@ func executeCmdWithClient(fc client.Client, args ...string) (string, error) {
 	root.SetArgs(args)
 
 	ctx := context.WithValue(context.Background(), clientContextKey, fc)
+	root.SetContext(ctx)
+
+	err := root.Execute()
+	return buf.String(), err
+}
+
+// executeCmdWithClientAndKube runs a root command with both a fake controller-runtime
+// client and a fake kubernetes clientset injected via context.
+func executeCmdWithClientAndKube(fc client.Client, kcs kubernetes.Interface, args ...string) (string, error) {
+	root := newRootCmd()
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs(args)
+
+	ctx := context.WithValue(context.Background(), clientContextKey, fc)
+	ctx = context.WithValue(ctx, kubeClientsetContextKey, kcs)
 	root.SetContext(ctx)
 
 	err := root.Execute()
@@ -190,9 +209,30 @@ func TestCLI_PromoteCreatesCRD(t *testing.T) {
 }
 
 func TestCLI_ExportOutputsValidYAML(t *testing.T) {
-	// Export produces YAML output for a domain
+	s := testScheme()
+	ns := "myproduct-payments"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", CreationTimestamp: metav1.Now()},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"payments": ns},
+		},
+	}
+	compute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns, CreationTimestamp: metav1.Now()},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Image: "echo-api:latest"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app, compute).Build()
+
 	tmpDir := t.TempDir()
-	out, err := executeCmd("export", "--domain", "payments", "--output", tmpDir)
+	out, err := executeCmdWithClient(fc, "export", "--domain", "payments", "--app", "myproduct", "--output", tmpDir)
 	if err != nil {
 		t.Fatalf("export should not error: %v", err)
 	}
@@ -200,13 +240,16 @@ func TestCLI_ExportOutputsValidYAML(t *testing.T) {
 		t.Fatal("export should produce output")
 	}
 
-	// Verify the file is created
+	// Verify the file is created with valid YAML content.
 	data, err := os.ReadFile(filepath.Join(tmpDir, "payments.yaml"))
 	if err != nil {
 		t.Fatalf("export output file should exist: %v", err)
 	}
 	if len(data) == 0 {
 		t.Fatal("export output should not be empty")
+	}
+	if !strings.Contains(string(data), "ChoCompute") {
+		t.Errorf("exported YAML should contain ChoCompute kind, got:\n%s", string(data))
 	}
 }
 
@@ -749,12 +792,24 @@ func TestCLI_Logs_RequiresSandbox(t *testing.T) {
 }
 
 func TestCLI_Logs_NoComponent(t *testing.T) {
-	out, err := executeCmd("logs", "--domain", "payments", "--sandbox", "alice")
+	s := testScheme()
+	sbNs := "myproduct-payments-sbx-alice"
+	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
+	sb := &choristerv1alpha1.ChoSandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default"},
+		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co"},
+		Status:     choristerv1alpha1.ChoSandboxStatus{Namespace: sbNs, Phase: "Active"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(app, sb).Build()
+	// Empty kubernetes clientset: no pods in the sandbox namespace.
+	kcs := kubernetesfake.NewSimpleClientset()
+
+	out, err := executeCmdWithClientAndKube(fc, kcs, "logs", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct")
 	if err != nil {
 		t.Fatalf("logs without component should not error: %v", err)
 	}
-	if !strings.Contains(out, "No component specified") {
-		t.Errorf("output should mention no component:\n%s", out)
+	if !strings.Contains(out, "No components found") {
+		t.Errorf("output should mention no components found:\n%s", out)
 	}
 }
 
