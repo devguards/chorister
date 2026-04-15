@@ -40,15 +40,27 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 )
 
+const (
+	labelRevision = "chorister.dev/rev"
+)
+
 // ChoComputeReconciler reconciles a ChoCompute object
 type ChoComputeReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// ControllerRevision is the revision name of this controller instance.
+	// When set, the controller only reconciles resources in namespaces
+	// that match this revision via the chorister.dev/rev label, or
+	// in unlabeled namespaces when this matches the stable revision in ChoCluster.
+	ControllerRevision string
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocomputes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocomputes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chocomputes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -66,6 +78,16 @@ func (r *ChoComputeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Phase 19.1: Controller revision labeling — skip if namespace revision doesn't match
+	if r.ControllerRevision != "" {
+		if skip, err := r.shouldSkipForRevision(ctx, compute.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if skip {
+			log.Info("Skipping reconciliation: revision mismatch", "namespace", compute.Namespace, "controllerRevision", r.ControllerRevision)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	variant := compute.Spec.Variant
@@ -468,6 +490,11 @@ func (r *ChoComputeReconciler) updateStatus(ctx context.Context, compute *choris
 		compute.Status.Ready = true // CronJobs are "ready" once created
 	}
 
+	// Phase 19.3: Record the controller revision that compiled this resource
+	if r.ControllerRevision != "" {
+		compute.Status.CompiledWithRevision = r.ControllerRevision
+	}
+
 	setCondition(&compute.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             conditionStatus(compute.Status.Ready),
@@ -492,6 +519,38 @@ func computeResources(compute *choristerv1alpha1.ChoCompute) corev1.ResourceRequ
 		return *compute.Spec.Resources
 	}
 	return corev1.ResourceRequirements{}
+}
+
+// shouldSkipForRevision checks if the controller should skip reconciliation
+// based on the namespace's chorister.dev/rev label and the ChoCluster stable revision.
+func (r *ChoComputeReconciler) shouldSkipForRevision(ctx context.Context, namespace string) (bool, error) {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil // namespace not found, let reconciliation handle it
+		}
+		return false, err
+	}
+
+	nsRev := ns.Labels[labelRevision]
+	if nsRev != "" {
+		// Namespace is labeled — must match controller revision
+		return nsRev != r.ControllerRevision, nil
+	}
+
+	// Namespace not labeled — check ChoCluster for stable revision
+	clusterList := &choristerv1alpha1.ChoClusterList{}
+	if err := r.List(ctx, clusterList); err != nil {
+		return false, nil // can't list clusters, don't skip
+	}
+	if len(clusterList.Items) > 0 {
+		stableRev := clusterList.Items[0].Spec.ControllerRevision
+		if stableRev != "" && stableRev != r.ControllerRevision {
+			return true, nil // this controller is not the stable revision
+		}
+	}
+
+	return false, nil
 }
 
 func conditionStatus(ready bool) metav1.ConditionStatus {

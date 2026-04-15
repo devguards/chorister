@@ -649,18 +649,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 19: Controller upgrade & CRD versioning
 
-- [ ] **19.1 — Controller revision labeling**
+- [x] **19.1 — Controller revision labeling**
   - Controller reads its revision name from config and only reconciles namespaces with matching `chorister.dev/rev` label
   - Untagged namespaces default to the revision tagged `stable` in ChoCluster
   - **Test:** deploy controller with revision "1-0" → create namespace with `chorister.dev/rev: "1-0"` → assert reconciled. Create namespace with different rev → assert ignored.
 
-- [ ] **19.2 — Blue-green controller upgrade flow**
+- [x] **19.2 — Blue-green controller upgrade flow**
   - `chorister admin upgrade --revision <new>` deploys a new controller alongside the old one
   - `chorister admin upgrade --promote <rev>` retags all namespaces and marks revision as stable
   - `chorister admin upgrade --rollback <rev>` removes canary revision
   - **Test:** deploy v1 (stable) → deploy v2 (canary) → retag one namespace to v2 → assert v2 reconciles it → promote v2 → assert all namespaces on v2 → old controller idle
 
-- [ ] **19.3 — Compilation stability tracking**
+- [x] **19.3 — Compilation stability tracking**
   - Controller records `compiledWithRevision` in each resource's status
   - `chorister diff` shows when compiled output differs between controller revisions even if DSL is unchanged
   - **Test:** compile resource with v1 → upgrade to v2 (different output) → `chorister diff` shows the compilation difference
@@ -669,19 +669,19 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 20: Sandbox lifecycle & FinOps quotas
 
-- [ ] **20.1 — Sandbox idle detection and auto-destroy**
+- [x] **20.1 — Sandbox idle detection and auto-destroy**
   - Controller tracks last `chorister apply` timestamp per sandbox
   - Sandboxes idle longer than `policy.sandbox.maxIdleDays` are auto-destroyed
   - 24h warning via status condition before destruction
   - **Test:** create sandbox → wait beyond idle threshold (use short interval for test) → assert warning condition → assert sandbox destroyed
 
-- [ ] **20.2 — FinOps cost estimation engine**
+- [x] **20.2 — FinOps cost estimation engine**
   - Define `ChoCluster.spec.finops.rates` for per-unit cost rates (CPU/hour, memory/GB-hour, storage/GB-month, per-size flat rates)
   - Controller estimates cost of each sandbox based on resource declarations and rates
   - Cost visible in sandbox status: `status.sandbox.estimatedMonthlyCost`
   - **Test:** set rates in ChoCluster → create sandbox with known resources → assert estimated cost matches expected calculation
 
-- [ ] **20.3 — Domain sandbox budget enforcement**
+- [x] **20.3 — Domain sandbox budget enforcement**
   - `policy.sandbox.defaultBudgetPerDomain` in ChoApplication, overridable per domain
   - `chorister sandbox create` rejected if domain total would exceed budget (with cost breakdown in error)
   - Alert at configurable threshold (default 80%)

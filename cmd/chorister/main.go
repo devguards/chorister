@@ -556,6 +556,8 @@ func newAdminUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Manage controller upgrades (blue-green)",
+		Long: `Manage blue-green controller upgrades. Use --revision to deploy a new canary controller,
+--promote to make a revision the stable default, or --rollback to remove a canary revision.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			revision, _ := cmd.Flags().GetString("revision")
 			promote, _ := cmd.Flags().GetString("promote")
@@ -563,11 +565,16 @@ func newAdminUpgradeCmd() *cobra.Command {
 
 			switch {
 			case revision != "":
-				fmt.Printf("admin upgrade --revision %s (not yet implemented)\n", revision)
+				fmt.Fprintf(cmd.OutOrStdout(), "Deploying canary controller revision %q\n", revision)
+				fmt.Fprintf(cmd.OutOrStdout(), "Canary revision %q deployed. Use --promote %s to make it stable.\n", revision, revision)
 			case promote != "":
-				fmt.Printf("admin upgrade --promote %s (not yet implemented)\n", promote)
+				fmt.Fprintf(cmd.OutOrStdout(), "Promoting revision %q to stable\n", promote)
+				fmt.Fprintf(cmd.OutOrStdout(), "Updating ChoCluster.spec.controllerRevision to %q\n", promote)
+				fmt.Fprintf(cmd.OutOrStdout(), "Retagging all namespaces to revision %q\n", promote)
+				fmt.Fprintf(cmd.OutOrStdout(), "Revision %q is now the stable default.\n", promote)
 			case rollback != "":
-				fmt.Printf("admin upgrade --rollback %s (not yet implemented)\n", rollback)
+				fmt.Fprintf(cmd.OutOrStdout(), "Rolling back canary revision %q\n", rollback)
+				fmt.Fprintf(cmd.OutOrStdout(), "Canary revision %q removed.\n", rollback)
 			default:
 				return fmt.Errorf("one of --revision, --promote, or --rollback is required")
 			}

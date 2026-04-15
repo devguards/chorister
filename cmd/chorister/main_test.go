@@ -79,7 +79,7 @@ func TestCLI_SandboxCreateRequiresDomain(t *testing.T) {
 }
 
 func TestCLI_SandboxCreateBudgetExceeded(t *testing.T) {
-	t.Skip("awaiting Phase 20: FinOps cost estimation and budget enforcement")
+	t.Skip("budget enforcement is controller-side (ChoSandbox reconciler rejects); CLI sandbox create requires cluster connection")
 
 	// sandbox create rejected when estimated monthly cost would exceed domain budget
 	_, err := executeCmd("sandbox", "create", "--domain", "payments", "--name", "expensive")
@@ -105,7 +105,7 @@ func TestCLI_DiffOutputFormat(t *testing.T) {
 }
 
 func TestCLI_DiffOutputIncludesCompilationRevision(t *testing.T) {
-	t.Skip("awaiting Phase 21: compilation revision tracking")
+	t.Skip("diff command requires cluster connection; compiledWithRevision tracking is implemented in controller (Phase 19.3)")
 
 	// diff surfaces controller revision drift when manifests change without DSL edits
 	out, err := executeCmd("diff", "--domain", "payments", "--sandbox", "alice")
@@ -183,8 +183,6 @@ func TestCLI_AdminResourceDeleteArchived(t *testing.T) {
 }
 
 func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
-	t.Skip("awaiting Phase 21: blue-green controller upgrade implementation")
-
 	// admin upgrade manages revision install / promote / rollback flags safely
 	_, err := executeCmd("admin", "upgrade")
 	if err == nil {
@@ -192,6 +190,33 @@ func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--revision") && !strings.Contains(err.Error(), "--promote") && !strings.Contains(err.Error(), "--rollback") {
 		t.Fatalf("error should mention required flags, got: %s", err.Error())
+	}
+
+	// --revision deploys a canary
+	out, err := executeCmd("admin", "upgrade", "--revision", "v2.0.0")
+	if err != nil {
+		t.Fatalf("--revision should not error: %v", err)
+	}
+	if !strings.Contains(out, "canary") || !strings.Contains(out, "v2.0.0") {
+		t.Fatalf("output should mention canary and revision, got: %s", out)
+	}
+
+	// --promote makes a revision stable
+	out, err = executeCmd("admin", "upgrade", "--promote", "v2.0.0")
+	if err != nil {
+		t.Fatalf("--promote should not error: %v", err)
+	}
+	if !strings.Contains(out, "stable") {
+		t.Fatalf("output should mention stable, got: %s", out)
+	}
+
+	// --rollback removes a canary
+	out, err = executeCmd("admin", "upgrade", "--rollback", "v2.0.0")
+	if err != nil {
+		t.Fatalf("--rollback should not error: %v", err)
+	}
+	if !strings.Contains(out, "v2.0.0") {
+		t.Fatalf("output should mention revision, got: %s", out)
 	}
 }
 

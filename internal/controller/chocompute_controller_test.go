@@ -365,4 +365,240 @@ var _ = Describe("ChoCompute Controller", func() {
 			Expect(k8sClient.Delete(ctx, compute)).To(Succeed())
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Phase 19.1 — Controller revision labeling
+	// -----------------------------------------------------------------------
+
+	Context("Phase 19.1 — Controller revision labeling", func() {
+		It("should reconcile resources in matching-revision namespace", func() {
+			// Create a namespace with revision label "1-0"
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "rev-match-test",
+					Labels: map[string]string{labelRevision: "1-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			// Ensure label is set even if namespace pre-existed
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rev-match-test"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[labelRevision] = "1-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-match-compute", Namespace: "rev-match-test"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, compute))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// Reconcile with matching revision "1-0"
+			reconciler := &ChoComputeReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert Deployment was created (reconciliation proceeded)
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, deploy)).To(Succeed())
+		})
+
+		It("should skip resources in non-matching-revision namespace", func() {
+			// Create a namespace with revision label "2-0"
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "rev-mismatch-test",
+					Labels: map[string]string{labelRevision: "2-0"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			// Ensure label is set even if namespace pre-existed
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rev-mismatch-test"}, ns)).To(Succeed())
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels[labelRevision] = "2-0"
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-mismatch-compute", Namespace: "rev-mismatch-test"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, compute))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// Reconcile with revision "1-0" (does not match namespace "2-0")
+			reconciler := &ChoComputeReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert Deployment was NOT created (reconciliation was skipped)
+			deploy := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, deploy)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no Deployment when revision mismatches")
+		})
+
+		It("should reconcile unlabeled namespace when controller is stable revision", func() {
+			// Create a ChoCluster with stable revision "1-0"
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-stable-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					ControllerRevision: "1-0",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, cluster))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			// Create a namespace without revision label
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "rev-unlabeled-test",
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+			// Ensure no revision label
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rev-unlabeled-test"}, ns)).To(Succeed())
+			delete(ns.Labels, labelRevision)
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-unlabeled-compute", Namespace: "rev-unlabeled-test"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, compute))).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// Reconcile with revision "1-0" matching ChoCluster stable
+			reconciler := &ChoComputeReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "1-0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert Deployment was created (controller is stable)
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, deploy)).To(Succeed())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Phase 19.3 — Compilation stability tracking
+	// -----------------------------------------------------------------------
+
+	Context("Phase 19.3 — Compilation stability tracking", func() {
+		It("should set compiledWithRevision in status", func() {
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-tracking-compute", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			reconciler := &ChoComputeReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "v1.2.3",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert compiledWithRevision is set
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			Expect(compute.Status.CompiledWithRevision).To(Equal("v1.2.3"))
+		})
+
+		It("should show compilation drift when revision changes", func() {
+			replicas := int32(1)
+			port := int32(8080)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "rev-drift-compute", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Port:        &port,
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// First reconcile with v1
+			reconciler := &ChoComputeReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				ControllerRevision: "v1.0.0",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			Expect(compute.Status.CompiledWithRevision).To(Equal("v1.0.0"))
+
+			// Second reconcile with v2
+			reconciler.ControllerRevision = "v2.0.0"
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert revision updated
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace}, compute)).To(Succeed())
+			Expect(compute.Status.CompiledWithRevision).To(Equal("v2.0.0"))
+		})
+	})
 })

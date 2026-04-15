@@ -18,12 +18,14 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -236,7 +238,307 @@ var _ = Describe("ChoSandbox Controller", func() {
 		})
 
 		It("should auto-destroy idle sandbox past threshold", func() {
-			Skip("awaiting Phase 20.1: Sandbox idle detection and auto-destroy")
+			ctx := context.Background()
+
+			// Create ChoApplication with maxIdleDays=1
+			maxIdleDays := 1
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "idle-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"test@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"developer"},
+						},
+						Sandbox: &choristerv1alpha1.SandboxPolicy{
+							MaxIdleDays: &maxIdleDays,
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			sandbox := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sandbox-idle-test",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "idle-app",
+					Domain:      "payments",
+					Name:        "idle",
+					Owner:       "test@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandbox)).To(Succeed())
+
+			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile to set up sandbox and initialize lastApplyTime
+			for i := 0; i < 3; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify sandbox is active
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace}, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal("Active"))
+
+			// Set lastApplyTime to 3 days ago (well past 1-day threshold)
+			threeDaysAgo := metav1.NewTime(time.Now().Add(-3 * 24 * time.Hour))
+			sandbox.Status.LastApplyTime = &threeDaysAgo
+			Expect(k8sClient.Status().Update(ctx, sandbox)).To(Succeed())
+
+			// Reconcile — should trigger auto-destroy
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The sandbox should be marked for deletion
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace}, sandbox)
+			if err == nil {
+				// If still exists, it should have DeletionTimestamp or Destroying phase
+				Expect(sandbox.DeletionTimestamp).NotTo(BeNil(), "expected sandbox to be deleted or in Destroying phase")
+			}
+			// If NotFound, that's also fine — sandbox was destroyed
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Phase 20.2 — FinOps cost estimation
+	// -----------------------------------------------------------------------
+
+	Context("Phase 20.2 — FinOps cost estimation", func() {
+		It("should estimate sandbox cost from resource declarations", func() {
+			ctx := context.Background()
+
+			// Create ChoCluster with cost rates
+			cpuRate := resource.MustParse("0.05")
+			memRate := resource.MustParse("0.01")
+			storageRate := resource.MustParse("0.10")
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cost-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					FinOps: &choristerv1alpha1.FinOpsSpec{
+						Rates: &choristerv1alpha1.CostRates{
+							CPUPerHour:        &cpuRate,
+							MemoryPerGBHour:   &memRate,
+							StoragePerGBMonth: &storageRate,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			// Create sandbox
+			sandbox := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sandbox-cost-test",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "costapp",
+					Domain:      "payments",
+					Name:        "cost",
+					Owner:       "test@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandbox)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sandbox) }()
+
+			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			for i := 0; i < 3; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Create a ChoCompute resource in sandbox namespace
+			nsName := SandboxNamespace("costapp", "payments", "cost")
+			replicas := int32(2)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "web",
+					Namespace: nsName,
+				},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "costapp",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Resources: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// Re-reconcile to pick up cost
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace}, sandbox)).To(Succeed())
+			Expect(sandbox.Status.EstimatedMonthlyCost).NotTo(Equal("0.00"))
+			Expect(sandbox.Status.EstimatedMonthlyCost).NotTo(BeEmpty())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Phase 20.3 — Domain sandbox budget enforcement
+	// -----------------------------------------------------------------------
+
+	Context("Phase 20.3 — Domain sandbox budget enforcement", func() {
+		It("should set BudgetExceeded when domain budget is exceeded", func() {
+			ctx := context.Background()
+
+			// Create ChoCluster with cost rates (high rates so even small resources cost a lot)
+			cpuRate := resource.MustParse("100")
+			memRate := resource.MustParse("50")
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "budget-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					FinOps: &choristerv1alpha1.FinOpsSpec{
+						Rates: &choristerv1alpha1.CostRates{
+							CPUPerHour:      &cpuRate,
+							MemoryPerGBHour: &memRate,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			// Create ChoApplication with a small budget ($10)
+			budget := resource.MustParse("10")
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "budget-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"test@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"developer"},
+						},
+						Sandbox: &choristerv1alpha1.SandboxPolicy{
+							DefaultBudgetPerDomain: &budget,
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			// Create first sandbox (will set up namespace and resources)
+			sandbox1 := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{Name: "budget-sandbox-1", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "budget-app",
+					Domain:      "payments",
+					Name:        "expensive1",
+					Owner:       "test@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandbox1)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sandbox1) }()
+
+			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			for i := 0; i < 3; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Create expensive ChoCompute in sandbox1 namespace
+			nsName := SandboxNamespace("budget-app", "payments", "expensive1")
+			replicas := int32(4)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "big-compute", Namespace: nsName},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "budget-app",
+					Domain:      "payments",
+					Image:       "nginx:latest",
+					Replicas:    &replicas,
+					Resources: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			// Re-reconcile sandbox1 to compute its cost
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Now create a second sandbox — should trigger budget exceeded
+			sandbox2 := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{Name: "budget-sandbox-2", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "budget-app",
+					Domain:      "payments",
+					Name:        "expensive2",
+					Owner:       "test@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandbox2)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sandbox2) }()
+
+			for i := 0; i < 3; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: sandbox2.Name, Namespace: sandbox2.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Check that the cost of sandbox1 causes budget check for domain to fail
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace}, sandbox1)).To(Succeed())
+			// The first sandbox has expensive resources, but itself was created before budget check
+			// The budget enforcement checks the total across all domain sandboxes
+			// Since sandbox1 alone likely exceeds the $10 budget with $100/CPU/hr rates:
+			// 4 replicas * 2 CPU * $100/hr * 730h = $584,000 — way over $10
+
+			// Re-reconcile sandbox1 — now that budget is exceeded, it should get BudgetExceeded
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace}, sandbox1)).To(Succeed())
+			Expect(sandbox1.Status.Phase).To(Equal("BudgetExceeded"))
+
+			// Check BudgetExceeded condition
+			var budgetCondition *metav1.Condition
+			for i := range sandbox1.Status.Conditions {
+				if sandbox1.Status.Conditions[i].Type == "BudgetExceeded" {
+					budgetCondition = &sandbox1.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(budgetCondition).NotTo(BeNil(), "expected BudgetExceeded condition")
+			Expect(budgetCondition.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 })

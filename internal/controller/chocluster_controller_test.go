@@ -350,7 +350,45 @@ var _ = Describe("ChoCluster Controller", func() {
 		})
 
 		It("should expose FinOps cost rates", func() {
-			Skip("awaiting Phase 20.2: FinOps cost estimation engine")
+			cpuRate := resource.MustParse("0.05")
+			memRate := resource.MustParse("0.01")
+			storageRate := resource.MustParse("0.10")
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "finops-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					FinOps: &choristerv1alpha1.FinOpsSpec{
+						Rates: &choristerv1alpha1.CostRates{
+							CPUPerHour:        &cpuRate,
+							MemoryPerGBHour:   &memRate,
+							StoragePerGBMonth: &storageRate,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the cluster reconciled successfully with FinOps rates
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Status.Phase).To(Equal("Ready"))
+
+			// Verify cost rates are accessible
+			Expect(cluster.Spec.FinOps).NotTo(BeNil())
+			Expect(cluster.Spec.FinOps.Rates).NotTo(BeNil())
+			Expect(cluster.Spec.FinOps.Rates.CPUPerHour.AsApproximateFloat64()).To(BeNumerically("~", 0.05, 0.001))
+			Expect(cluster.Spec.FinOps.Rates.MemoryPerGBHour.AsApproximateFloat64()).To(BeNumerically("~", 0.01, 0.001))
+			Expect(cluster.Spec.FinOps.Rates.StoragePerGBMonth.AsApproximateFloat64()).To(BeNumerically("~", 0.10, 0.001))
 		})
 
 		It("should install default sizing templates on bootstrap", func() {
