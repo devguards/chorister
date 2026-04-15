@@ -691,13 +691,13 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 21: Resource sizing templates
 
-- [ ] **21.1 — Sizing template definitions in ChoCluster**
+- [x] **21.1 — Sizing template definitions in ChoCluster**
   - `ChoCluster.spec.sizingTemplates` with per-resource-type named templates (database, cache, queue)
   - `chorister setup` creates sensible defaults
   - `size` field in DSL references template name → compile error if template doesn't exist
   - **Test:** define templates in ChoCluster → create ChoDatabase with `size: "medium"` → assert resource requests match template. Use undefined size → assert compile error.
 
-- [ ] **21.2 — Explicit resource override**
+- [x] **21.2 — Explicit resource override**
   - DSL allows explicit `cpu`, `memory`, `storage` fields that bypass templates entirely
   - Controller validates against namespace ResourceQuota
   - **Test:** create ChoDatabase with explicit cpu/memory/storage → assert values used instead of template. Exceed quota → assert rejection.

@@ -116,17 +116,11 @@ spec:
                     type: object
                 type: object
               size:
-                default: small
-                description: size references a sizing template from ChoCluster (small/medium/large).
-                enum:
-                - small
-                - medium
-                - large
+                description: size references a sizing template from ChoCluster.
                 type: string
             required:
             - application
             - domain
-            - size
             type: object
           status:
             description: ChoCacheStatus defines the observed state of ChoCache.

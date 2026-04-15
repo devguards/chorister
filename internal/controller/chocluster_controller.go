@@ -40,6 +40,7 @@ import (
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/audit"
+	"github.com/chorister-dev/chorister/internal/compiler"
 )
 
 const (
@@ -100,6 +101,11 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Initialize status maps
 	if cluster.Status.OperatorStatus == nil {
 		cluster.Status.OperatorStatus = make(map[string]string)
+	}
+
+	// Phase 21.1: Ensure default sizing templates are installed (before status accumulates)
+	if err := r.reconcileDefaultSizingTemplates(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Phase 12.1: Reconcile operators
@@ -626,6 +632,49 @@ var certManagerClusterIssuerGVK = schema.GroupVersionKind{
 	Group:   "cert-manager.io",
 	Version: "v1",
 	Kind:    "ClusterIssuer",
+}
+
+// ---------------------------------------------------------------------------
+// Phase 21.1: Default sizing templates
+// ---------------------------------------------------------------------------
+
+func (r *ChoClusterReconciler) reconcileDefaultSizingTemplates(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	if cluster.Spec.SizingTemplates != nil && len(cluster.Spec.SizingTemplates) > 0 {
+		// User has already defined templates; set condition and return
+		setCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:    "SizingTemplatesAvailable",
+			Status:  metav1.ConditionTrue,
+			Reason:  "UserDefined",
+			Message: fmt.Sprintf("%d resource type(s) have sizing templates defined", len(cluster.Spec.SizingTemplates)),
+		})
+		return nil
+	}
+
+	// Install default templates
+	cluster.Spec.SizingTemplates = compiler.DefaultSizingTemplates()
+	if err := r.Update(ctx, cluster); err != nil {
+		return fmt.Errorf("install default sizing templates: %w", err)
+	}
+
+	// Re-fetch to get the server version (Update returns server state which may
+	// not include locally accumulated status changes).
+	if err := r.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster); err != nil {
+		return fmt.Errorf("re-fetch cluster after sizing template install: %w", err)
+	}
+
+	// Re-initialize status maps after re-fetch
+	if cluster.Status.OperatorStatus == nil {
+		cluster.Status.OperatorStatus = make(map[string]string)
+	}
+
+	setCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:    "SizingTemplatesAvailable",
+		Status:  metav1.ConditionTrue,
+		Reason:  "DefaultsInstalled",
+		Message: "Default sizing templates installed for compute, database, cache, and queue",
+	})
+
+	return nil
 }
 
 // ---------------------------------------------------------------------------

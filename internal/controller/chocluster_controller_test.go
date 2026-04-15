@@ -325,8 +325,6 @@ var _ = Describe("ChoCluster Controller", func() {
 		})
 
 		It("should make sizing templates available for resource compilation", func() {
-			Skip("awaiting Phase 21.1: Sizing template definitions")
-
 			cluster := &choristerv1alpha1.ChoCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: "sizing-cluster"},
 				Spec: choristerv1alpha1.ChoClusterSpec{
@@ -344,9 +342,31 @@ var _ = Describe("ChoCluster Controller", func() {
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
 
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
 			Expect(cluster.Spec.SizingTemplates).To(HaveKey("database"))
 			Expect(cluster.Spec.SizingTemplates["database"].Templates).To(HaveKey("medium"))
+
+			// Check condition
+			var sizingCondition *metav1.Condition
+			for i := range cluster.Status.Conditions {
+				if cluster.Status.Conditions[i].Type == "SizingTemplatesAvailable" {
+					sizingCondition = &cluster.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(sizingCondition).NotTo(BeNil())
+			Expect(sizingCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(sizingCondition.Reason).To(Equal("UserDefined"))
 		})
 
 		It("should expose FinOps cost rates", func() {
@@ -392,7 +412,45 @@ var _ = Describe("ChoCluster Controller", func() {
 		})
 
 		It("should install default sizing templates on bootstrap", func() {
-			Skip("awaiting Phase 21.1: Sizing template definitions")
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "default-sizing-cluster"},
+				Spec:       choristerv1alpha1.ChoClusterSpec{},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch the cluster to see updated spec
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Spec.SizingTemplates).NotTo(BeEmpty())
+			for _, resType := range []string{"compute", "database", "cache", "queue"} {
+				Expect(cluster.Spec.SizingTemplates).To(HaveKey(resType), "expected default templates for %s", resType)
+				set := cluster.Spec.SizingTemplates[resType]
+				for _, size := range []string{"small", "medium", "large"} {
+					Expect(set.Templates).To(HaveKey(size), "expected %s size for %s", size, resType)
+				}
+			}
+
+			// Check condition
+			var sizingCondition *metav1.Condition
+			for i := range cluster.Status.Conditions {
+				if cluster.Status.Conditions[i].Type == "SizingTemplatesAvailable" {
+					sizingCondition = &cluster.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(sizingCondition).NotTo(BeNil())
+			Expect(sizingCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(sizingCondition.Reason).To(Equal("DefaultsInstalled"))
 		})
 
 		It("should block reconciliation on audit write failure", func() {

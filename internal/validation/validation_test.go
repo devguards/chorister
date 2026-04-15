@@ -466,69 +466,169 @@ func TestValidateComplianceEscalation_OK(t *testing.T) {
 // --- Sizing templates ---
 
 func TestValidateSizingTemplate_Undefined(t *testing.T) {
-	t.Skip("awaiting Phase 21.1: Sizing template definitions")
-
-	db := &choristerv1alpha1.ChoDatabase{
-		Spec: choristerv1alpha1.ChoDatabaseSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Engine:      "postgres",
-			Size:        "nonexistent-size",
+	// Use actual sizing templates from ChoCluster
+	clusterTemplates := map[string]choristerv1alpha1.SizingTemplateSet{
+		"database": {
+			Templates: map[string]choristerv1alpha1.SizingTemplate{
+				"small":  {CPU: resource.MustParse("250m"), Memory: resource.MustParse("512Mi")},
+				"medium": {CPU: resource.MustParse("1"), Memory: resource.MustParse("2Gi")},
+			},
 		},
 	}
 
-	_ = db
-	// TODO: Assert compile error: undefined size template
+	errs := ValidateSizingTemplate("nonexistent-size", "database", clusterTemplates)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for undefined size template, got none")
+	}
+	if !contains(errs[0], "undefined size") {
+		t.Fatalf("expected error about undefined size, got: %v", errs)
+	}
+	if !contains(errs[0], "nonexistent-size") {
+		t.Fatalf("expected error to include template name, got: %v", errs)
+	}
 }
 
 func TestValidateSizingTemplate_ErrorMessage(t *testing.T) {
-	t.Skip("awaiting Phase 21.1: Sizing template definitions")
+	clusterTemplates := map[string]choristerv1alpha1.SizingTemplateSet{
+		"database": {
+			Templates: map[string]choristerv1alpha1.SizingTemplate{
+				"small":  {CPU: resource.MustParse("250m"), Memory: resource.MustParse("512Mi")},
+				"medium": {CPU: resource.MustParse("1"), Memory: resource.MustParse("2Gi")},
+				"large":  {CPU: resource.MustParse("4"), Memory: resource.MustParse("8Gi")},
+			},
+		},
+	}
 
-	// TODO: Assert error includes template name and available options
+	errs := ValidateSizingTemplate("jumbo", "database", clusterTemplates)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error, got none")
+	}
+	// Error must include the template name and available options
+	if !contains(errs[0], "jumbo") {
+		t.Fatalf("expected error to include template name 'jumbo', got: %v", errs)
+	}
+	if !contains(errs[0], "small") || !contains(errs[0], "medium") || !contains(errs[0], "large") {
+		t.Fatalf("expected error to include available options, got: %v", errs)
+	}
+
+	// Valid size should pass
+	errs = ValidateSizingTemplate("medium", "database", clusterTemplates)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for valid size, got: %v", errs)
+	}
+
+	// Missing resource type should error
+	errs = ValidateSizingTemplate("small", "nosuchtype", clusterTemplates)
+	if len(errs) == 0 {
+		t.Fatal("expected error for missing resource type, got none")
+	}
+
+	// Empty size should pass (no template reference)
+	errs = ValidateSizingTemplate("", "database", clusterTemplates)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for empty size, got: %v", errs)
+	}
 }
 
 func TestValidateQuotaExceeded(t *testing.T) {
-	t.Skip("awaiting Phase 2.3: Resource quota and LimitRange")
-
-	appPolicy := choristerv1alpha1.ApplicationPolicy{
-		Compliance: "essential",
-		Promotion: choristerv1alpha1.PromotionPolicy{
-			RequiredApprovers: 1,
-			AllowedRoles:      []string{"developer"},
-		},
-		Quotas: &choristerv1alpha1.QuotaPolicy{
-			DefaultPerDomain: &choristerv1alpha1.DomainQuota{
-				CPU:    resource.MustParse("2"),
-				Memory: resource.MustParse("4Gi"),
-			},
-		},
+	quota := &choristerv1alpha1.DomainQuota{
+		CPU:    resource.MustParse("2"),
+		Memory: resource.MustParse("4Gi"),
 	}
 
 	// Resource requests exceed namespace quota
-	compute := &choristerv1alpha1.ChoCompute{
-		Spec: choristerv1alpha1.ChoComputeSpec{
-			Application: "myapp",
-			Domain:      "payments",
-			Image:       "myregistry/api:v1",
-			Replicas:    int32Ptr(1),
-			Resources: &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("8"),
-					corev1.ResourceMemory: resource.MustParse("16Gi"),
-				},
-			},
+	resources := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("8"),
+			corev1.ResourceMemory: resource.MustParse("16Gi"),
 		},
 	}
 
-	_, _ = appPolicy, compute
-	// TODO: Assert error: resources exceed namespace quota
+	errs := ValidateResourcesVsQuota(resources, quota, "ChoCompute/api")
+	if len(errs) == 0 {
+		t.Fatal("expected validation errors for quota exceeded, got none")
+	}
+	if len(errs) != 2 {
+		t.Fatalf("expected 2 errors (CPU + memory), got %d: %v", len(errs), errs)
+	}
+	if !contains(errs[0], "CPU") {
+		t.Fatalf("expected CPU error, got: %s", errs[0])
+	}
+	if !contains(errs[1], "memory") {
+		t.Fatalf("expected memory error, got: %s", errs[1])
+	}
+
+	// Within quota should pass
+	withinQuota := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+	}
+	errs = ValidateResourcesVsQuota(withinQuota, quota, "ChoCompute/api")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for within-quota resources, got: %v", errs)
+	}
+
+	// Nil resources or nil quota should pass
+	errs = ValidateResourcesVsQuota(nil, quota, "ChoCompute/api")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for nil resources, got: %v", errs)
+	}
+	errs = ValidateResourcesVsQuota(resources, nil, "ChoCompute/api")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for nil quota, got: %v", errs)
+	}
 }
 
 func TestValidateExplicitResourcesVsQuota(t *testing.T) {
-	t.Skip("awaiting Phase 21.2: Explicit resource override")
+	quota := &choristerv1alpha1.DomainQuota{
+		CPU:     resource.MustParse("2"),
+		Memory:  resource.MustParse("4Gi"),
+		Storage: resource.MustParse("100Gi"),
+	}
 
 	// Explicit override bypasses template but still fails quota validation
-	// TODO: Assert quota details in error message
+	explicitResources := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("8"),
+			corev1.ResourceMemory: resource.MustParse("16Gi"),
+		},
+	}
+
+	errs := ValidateExplicitResourcesVsQuota(explicitResources, quota, "ChoDatabase/main")
+	if len(errs) == 0 {
+		t.Fatal("expected errors for explicit resources exceeding quota, got none")
+	}
+	// Should include quota details
+	foundQuotaInfo := false
+	for _, e := range errs {
+		if contains(e, "domain quota") {
+			foundQuotaInfo = true
+			break
+		}
+	}
+	if !foundQuotaInfo {
+		t.Fatalf("expected quota details in error message, got: %v", errs)
+	}
+
+	// Within quota should pass
+	withinQuota := &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+	}
+	errs = ValidateExplicitResourcesVsQuota(withinQuota, quota, "ChoDatabase/main")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for within-quota resources, got: %v", errs)
+	}
+
+	// Nil explicit resources should pass
+	errs = ValidateExplicitResourcesVsQuota(nil, quota, "ChoDatabase/main")
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for nil resources, got: %v", errs)
+	}
 }
 
 // --- Archive lifecycle ---

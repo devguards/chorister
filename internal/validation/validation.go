@@ -23,7 +23,11 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/compiler"
 )
 
 // ValidateConsumesSupplies checks that every consumes reference has a matching supplies declaration.
@@ -337,4 +341,88 @@ func ParseRetentionDuration(s string) (time.Duration, error) {
 		return time.Duration(years) * 365 * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// ValidateSizingTemplate checks that a size reference resolves to a defined template.
+// resourceType is the template category (e.g. "database", "cache", "queue", "compute").
+func ValidateSizingTemplate(sizeName, resourceType string, templates map[string]choristerv1alpha1.SizingTemplateSet) []string {
+	if sizeName == "" {
+		return nil
+	}
+	_, err := compiler.ResolveSizingTemplate(sizeName, resourceType, templates)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return nil
+}
+
+// ValidateResourcesVsQuota checks that resource requests do not exceed the domain quota.
+// resources is the effective resource requirements (either explicit or resolved from template).
+func ValidateResourcesVsQuota(resources *corev1.ResourceRequirements, quota *choristerv1alpha1.DomainQuota, resourceName string) []string {
+	if resources == nil || quota == nil {
+		return nil
+	}
+
+	var errs []string
+	requests := resources.Requests
+
+	if cpuReq, ok := requests[corev1.ResourceCPU]; ok {
+		if !quota.CPU.IsZero() && cpuReq.Cmp(quota.CPU) > 0 {
+			errs = append(errs, fmt.Sprintf(
+				"%s: CPU request %s exceeds domain quota %s",
+				resourceName, cpuReq.String(), quota.CPU.String(),
+			))
+		}
+	}
+
+	if memReq, ok := requests[corev1.ResourceMemory]; ok {
+		if !quota.Memory.IsZero() && memReq.Cmp(quota.Memory) > 0 {
+			errs = append(errs, fmt.Sprintf(
+				"%s: memory request %s exceeds domain quota %s",
+				resourceName, memReq.String(), quota.Memory.String(),
+			))
+		}
+	}
+
+	if storageReq, ok := requests[corev1.ResourceStorage]; ok {
+		if !quota.Storage.IsZero() && storageReq.Cmp(quota.Storage) > 0 {
+			errs = append(errs, fmt.Sprintf(
+				"%s: storage request %s exceeds domain quota %s",
+				resourceName, storageReq.String(), quota.Storage.String(),
+			))
+		}
+	}
+
+	return errs
+}
+
+// ValidateExplicitResourcesVsQuota validates explicit resource overrides against the domain quota.
+// This provides a clear error message that includes quota details.
+func ValidateExplicitResourcesVsQuota(
+	explicitResources *corev1.ResourceRequirements,
+	quota *choristerv1alpha1.DomainQuota,
+	resourceName string,
+) []string {
+	if explicitResources == nil || quota == nil {
+		return nil
+	}
+
+	errs := ValidateResourcesVsQuota(explicitResources, quota, resourceName)
+	if len(errs) > 0 {
+		// Enhance error messages with quota info
+		quotaInfo := fmt.Sprintf("domain quota: CPU=%s, memory=%s, storage=%s",
+			formatQuantityOrUnset(quota.CPU),
+			formatQuantityOrUnset(quota.Memory),
+			formatQuantityOrUnset(quota.Storage),
+		)
+		errs = append(errs, quotaInfo)
+	}
+	return errs
+}
+
+func formatQuantityOrUnset(q resource.Quantity) string {
+	if q.IsZero() {
+		return "unset"
+	}
+	return q.String()
 }

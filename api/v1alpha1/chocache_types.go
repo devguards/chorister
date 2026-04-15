@@ -29,10 +29,9 @@ type ChoCacheSpec struct {
 	// domain is the domain this cache belongs to.
 	Domain string `json:"domain"`
 
-	// size references a sizing template from ChoCluster (small/medium/large).
-	// +kubebuilder:validation:Enum=small;medium;large
-	// +kubebuilder:default=small
-	Size string `json:"size"`
+	// size references a sizing template from ChoCluster.
+	// +optional
+	Size string `json:"size,omitempty"`
 
 	// resources defines explicit CPU/memory (overrides size template).
 	// +optional
