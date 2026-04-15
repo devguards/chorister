@@ -1,0 +1,14 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: scen12-myapp
+  namespace: cho-system
+spec:
+  domains:
+    - name: payments
+      sensitivity: internal
+      consumes: []
+    - name: auth
+      sensitivity: internal
+      supplies:
+        - port: 8080

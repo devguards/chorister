@@ -106,18 +106,18 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 ### Shared Infrastructure
 
-- [ ] **infra-setup-script** — `test/scenarios/setup-scenario-cluster.sh`
+- [x] **infra-setup-script** — `test/scenarios/setup-scenario-cluster.sh`
   - Wraps `hack/setup-test-cluster.sh`
   - Accepts `--cluster-name`, `--with-stackgres`, `--with-nats`, `--with-tetragon` flags
   - Builds and loads `echo-api` and `security-trigger` images into the cluster
   - Installs the chorister controller + CRDs via `make deploy`
   - Idempotent (safe to re-run)
 
-- [ ] **infra-teardown-script** — `test/scenarios/teardown-scenario-cluster.sh`
+- [x] **infra-teardown-script** — `test/scenarios/teardown-scenario-cluster.sh`
   - Deletes the named Kind cluster
   - Safe to call even if cluster doesn't exist
 
-- [ ] **infra-makefile-targets** — Add to `Makefile`:
+- [x] **infra-makefile-targets** — Add to `Makefile`:
   ```makefile
   .PHONY: test-scenarios
   test-scenarios: build ## Run all scenario tests (sequential, single cluster)
@@ -128,17 +128,17 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
       bash test/scenarios/$(SCENARIO)-*/run.sh
   ```
 
-- [ ] **stub-app-echo-api** — `test/scenarios/apps/echo-api/`
+- [x] **stub-app-echo-api** — `test/scenarios/apps/echo-api/`
   - `main.go`: HTTP server as described in Stub Applications section
   - `Dockerfile`: multi-arch, statically linked, < 10 MB
   - `k8s/deployment.yaml`: sample Deployment manifest for testing (not used directly — scenarios use ChoCompute CRDs)
 
-- [ ] **stub-app-security-trigger** — `test/scenarios/apps/security-trigger/`
+- [x] **stub-app-security-trigger** — `test/scenarios/apps/security-trigger/`
   - `main.go`: security event trigger server
   - `Dockerfile`: same constraints
   - Accepts all triggers via POST endpoints
 
-- [ ] **infra-run-all** — `test/scenarios/run-all.sh`
+- [x] **infra-run-all** — `test/scenarios/run-all.sh`
   - Runs each scenario's `run.sh` sequentially
   - Reports pass/fail per scenario
   - Returns non-zero exit if any scenario fails
@@ -148,26 +148,26 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/01-platform-bootstrap/`
 
-- [ ] **01-run** — `run.sh` orchestrates the scenario:
+- [x] **01-run** — `run.sh` orchestrates the scenario:
   1. Spin up cluster (Cilium, no operators yet)
   2. Run through all assertions
   3. Tear down cluster
 
-- [ ] **01-assert-setup** — Verify `chorister setup --dry-run` completes without error.
+- [x] **01-assert-setup** — Verify `chorister setup --dry-run` completes without error.
   - **Blocked on:** `chorister setup` actual implementation (currently returns an error unless cluster is running).
   - **Workaround:** Apply CRDs + controller manually via `kubectl apply -k config/default`, then assert controller pod is Running.
 
-- [ ] **01-assert-cluster-bootstrap** — Create a `ChoCluster` CR and verify:
+- [x] **01-assert-cluster-bootstrap** — Create a `ChoCluster` CR and verify:
   - Controller pod is Running in `cho-system`
   - CRDs are registered (all 12)
   - `chorister admin app list` returns empty list (not an error)
 
-- [ ] **01-assert-app-create** — Create a `ChoApplication` via kubectl (CLI `admin app create` is a stub):
+- [x] **01-assert-app-create** — Create a `ChoApplication` via kubectl (CLI `admin app create` is a stub):
   - Assert domain namespaces are created: `myapp-payments`, `myapp-auth`
   - Assert default-deny NetworkPolicy exists in each namespace
   - Assert `chorister status --app myapp` shows both domains
 
-- [ ] **01-assert-cli-version** — `chorister version` prints version string, non-empty.
+- [x] **01-assert-cli-version** — `chorister version` prints version string, non-empty.
 
 **Assertions file:** `test/scenarios/01-platform-bootstrap/assert.sh`
 
@@ -177,33 +177,33 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/02-developer-sandbox/`
 
-- [ ] **02-run** — `run.sh` setup + all assertions
+- [x] **02-run** — `run.sh` setup + all assertions
 
-- [ ] **02-setup** — Pre-create a `ChoApplication` with one domain (`payments`).
+- [x] **02-setup** — Pre-create a `ChoApplication` with one domain (`payments`).
 
-- [ ] **02-assert-sandbox-create** — `chorister sandbox create --domain payments --name alice`
+- [x] **02-assert-sandbox-create** — `chorister sandbox create --domain payments --name alice`
   - Assert sandbox namespace `myapp-payments-sandbox-alice` exists
   - Assert default-deny NetworkPolicy in sandbox namespace
   - `chorister sandbox list --domain payments` shows `alice`
 
-- [ ] **02-assert-apply-compute** — Apply a `ChoCompute` CR (echo-api image) to the sandbox.
+- [x] **02-assert-apply-compute** — Apply a `ChoCompute` CR (echo-api image) to the sandbox.
   - Assert Deployment is created in sandbox namespace
   - Assert Service is created if port is declared
   - `chorister status payments --app myapp` shows compute resource
 
-- [ ] **02-assert-apply-database** — Apply a `ChoDatabase` CR (postgres) to the sandbox.
+- [x] **02-assert-apply-database** — Apply a `ChoDatabase` CR (postgres) to the sandbox.
   - Assert credentials Secret is created
   - Assert `lifecycle: Active` in status
 
-- [ ] **02-assert-apply-queue** — Apply a `ChoQueue` CR (nats) to the sandbox.
+- [x] **02-assert-apply-queue** — Apply a `ChoQueue` CR (nats) to the sandbox.
   - Assert credentials Secret is created
 
-- [ ] **02-assert-apply-cache** — Apply a `ChoCache` CR (small) to the sandbox.
+- [x] **02-assert-apply-cache** — Apply a `ChoCache` CR (small) to the sandbox.
   - Assert credentials Secret is created
 
-- [ ] **02-assert-sandbox-status** — `chorister sandbox list` shows `alice` with resource counts.
+- [x] **02-assert-sandbox-status** — `chorister sandbox list` shows `alice` with resource counts.
 
-- [ ] **02-assert-sandbox-destroy** — `chorister sandbox destroy --domain payments --name alice`
+- [x] **02-assert-sandbox-destroy** — `chorister sandbox destroy --domain payments --name alice`
   - Assert sandbox namespace is deleted
   - Assert `chorister sandbox list` no longer shows `alice`
 
@@ -213,32 +213,32 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/03-sandbox-to-production/`
 
-- [ ] **03-run** — `run.sh`
+- [x] **03-run** — `run.sh`
 
-- [ ] **03-setup** — Pre-create `ChoApplication` with `payments` domain (1 required approver).
+- [x] **03-setup** — Pre-create `ChoApplication` with `payments` domain (1 required approver).
 
-- [ ] **03-assert-sandbox-and-apply** — Create sandbox, apply `echo-api` compute + database.
+- [x] **03-assert-sandbox-and-apply** — Create sandbox, apply `echo-api` compute + database.
 
-- [ ] **03-assert-diff-before-promote** — `chorister diff --domain payments --sandbox alice`
+- [x] **03-assert-diff-before-promote** — `chorister diff --domain payments --sandbox alice`
   - Assert output contains resources as "Added" (sandbox has them, production doesn't)
 
-- [ ] **03-assert-promote-creates-request** — `chorister promote --domain payments --sandbox alice`
+- [x] **03-assert-promote-creates-request** — `chorister promote --domain payments --sandbox alice`
   - Assert `ChoPromotionRequest` is created in `cho-system`
   - `chorister requests --domain payments` shows the request in `Pending`
 
-- [ ] **03-assert-unapproved-does-not-modify-prod** — Before approval:
+- [x] **03-assert-unapproved-does-not-modify-prod** — Before approval:
   - Assert production namespace does NOT contain the compute Deployment
   - Assert production namespace does NOT contain the database Secret
 
-- [ ] **03-assert-approve-promotes** — `chorister approve <request-id>`
+- [x] **03-assert-approve-promotes** — `chorister approve <request-id>`
   - Assert `ChoPromotionRequest` phase transitions to `Approved` then `Executing` then `Completed`
   - Assert compute Deployment appears in production namespace
   - Assert database credentials Secret appears in production namespace
 
-- [ ] **03-assert-diff-after-promote** — `chorister diff --domain payments --sandbox alice`
+- [x] **03-assert-diff-after-promote** — `chorister diff --domain payments --sandbox alice`
   - Assert output shows no differences (or "up to date")
 
-- [ ] **03-assert-rollback** — `chorister promote --domain payments --rollback`
+- [x] **03-assert-rollback** — `chorister promote --domain payments --rollback`
   - Assert rollback `ChoPromotionRequest` is created
 
 ---
@@ -249,26 +249,26 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Requires:** Cilium in cluster.
 
-- [ ] **04-run** — `run.sh`
+- [x] **04-run** — `run.sh`
 
-- [ ] **04-setup** — Create `ChoApplication` with:
+- [x] **04-setup** — Create `ChoApplication` with:
   - `payments` domain: `consumes auth:8080`, deploys `echo-api` pod
   - `auth` domain: `supplies :8080`, deploys `echo-api` pod
   - `unrelated` domain: no declares
 
-- [ ] **04-assert-cross-domain-allowed** — From `payments` pod, curl `auth-echo-api.myapp-auth.svc.cluster.local:8080/healthz`
+- [x] **04-assert-cross-domain-allowed** — From `payments` pod, curl `auth-echo-api.myapp-auth.svc.cluster.local:8080/healthz`
   - Assert HTTP 200
 
-- [ ] **04-assert-wrong-port-blocked** — From `payments` pod, curl `auth` service on port 9090
+- [x] **04-assert-wrong-port-blocked** — From `payments` pod, curl `auth` service on port 9090
   - Assert connection refused / timeout (NetworkPolicy blocks it)
 
-- [ ] **04-assert-unrelated-blocked** — From `unrelated` domain pod, curl `auth` service on port 8080
+- [x] **04-assert-unrelated-blocked** — From `unrelated` domain pod, curl `auth` service on port 8080
   - Assert connection refused / timeout
 
-- [ ] **04-assert-reverse-blocked** — From `auth` pod, curl `payments` service (auth does not `consumes payments`)
+- [x] **04-assert-reverse-blocked** — From `auth` pod, curl `payments` service (auth does not `consumes payments`)
   - Assert connection refused
 
-- [ ] **04-assert-egress-blocked** — From `payments` pod, curl an undeclared external IP
+- [x] **04-assert-egress-blocked** — From `payments` pod, curl an undeclared external IP
   - Assert connection blocked (requires Cilium FQDN egress enforcement)
   - **Note:** Only runs if cluster has Cilium egress enforcement enabled
 
@@ -280,9 +280,9 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Requires:** Cilium, Gateway API, a test OIDC token (can be a self-signed JWT for testing).
 
-- [ ] **05-run** — `run.sh`
+- [x] **05-run** — `run.sh`
 
-- [ ] **05-setup** — Create `ChoApplication` with an internet-facing `ChoNetwork` resource:
+- [x] **05-setup** — Create `ChoApplication` with an internet-facing `ChoNetwork` resource:
   ```yaml
   ingress:
     from: internet
@@ -297,19 +297,19 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
   ```
   Also deploy a mock JWKS server in `cho-system`.
 
-- [ ] **05-assert-no-auth-rejected** — Applying a `ChoNetwork` with internet ingress but NO auth block
+- [x] **05-assert-no-auth-rejected** — Applying a `ChoNetwork` with internet ingress but NO auth block
   - Assert controller rejects with validation error (or CRD webhook rejects it)
 
-- [ ] **05-assert-healthz-anonymous** — `curl /healthz` without JWT
+- [x] **05-assert-healthz-anonymous** — `curl /healthz` without JWT
   - Assert HTTP 200 (anonymous route declared)
 
-- [ ] **05-assert-api-requires-jwt** — `curl /api/users` without JWT
+- [x] **05-assert-api-requires-jwt** — `curl /api/users` without JWT
   - Assert HTTP 401
 
-- [ ] **05-assert-api-with-valid-jwt** — `curl /api/users` with a valid JWT signed by the test issuer
+- [x] **05-assert-api-with-valid-jwt** — `curl /api/users` with a valid JWT signed by the test issuer
   - Assert HTTP 200
 
-- [ ] **05-assert-api-with-invalid-jwt** — `curl /api/users` with a tampered JWT
+- [x] **05-assert-api-with-invalid-jwt** — `curl /api/users` with a tampered JWT
   - Assert HTTP 401
 
 ---
@@ -318,24 +318,24 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/06-archive-safety/`
 
-- [ ] **06-run** — `run.sh`
+- [x] **06-run** — `run.sh`
 
-- [ ] **06-setup** — Promote a `ChoDatabase` (`ledger`) to production via a ChoPromotionRequest.
+- [x] **06-setup** — Promote a `ChoDatabase` (`ledger`) to production via a ChoPromotionRequest.
   - Also promote a `ChoCompute` (`api`) that references the database credentials.
 
-- [ ] **06-assert-database-in-production** — Verify database credentials Secret exists in production namespace.
+- [x] **06-assert-database-in-production** — Verify database credentials Secret exists in production namespace.
 
-- [ ] **06-assert-remove-triggers-archive** — Remove `database "ledger"` from the domain and promote.
+- [x] **06-assert-remove-triggers-archive** — Remove `database "ledger"` from the domain and promote.
   - Assert `ChoDatabase` status transitions to `lifecycle: Archived` (not deleted)
   - Assert actual database resources (StatefulSet / Secret) still exist
 
-- [ ] **06-assert-archived-blocks-dependent-promotion** — Try to promote `ChoCompute` that still references the archived database credentials.
+- [x] **06-assert-archived-blocks-dependent-promotion** — Try to promote `ChoCompute` that still references the archived database credentials.
   - Assert the promotion is rejected with an error mentioning the archived resource
 
-- [ ] **06-assert-sandbox-delete-immediate** — In a sandbox, remove a database and apply.
+- [x] **06-assert-sandbox-delete-immediate** — In a sandbox, remove a database and apply.
   - Assert sandbox database is immediately deleted (no archive lifecycle in sandboxes)
 
-- [ ] **06-assert-explicit-delete-required** — `chorister admin resource delete --archived ledger --domain payments`
+- [x] **06-assert-explicit-delete-required** — `chorister admin resource delete --archived ledger --domain payments`
   - Assert only works after the retention period has passed (or with `--force` for testing)
   - Assert final backup snapshot reference is recorded in status
 
@@ -347,30 +347,30 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **This is the integration smoke test: does everything actually work together?**
 
-- [ ] **07-run** — `run.sh`
+- [x] **07-run** — `run.sh`
 
-- [ ] **07-setup** — Create `ChoApplication` with a `payments` domain. Apply:
+- [x] **07-setup** — Create `ChoApplication` with a `payments` domain. Apply:
   - `ChoCompute`: `echo-api` with env vars wired to secrets
   - `ChoDatabase`: postgres (non-HA for speed)
   - `ChoQueue`: nats
   - `ChoCache`: small
 
-- [ ] **07-assert-compute-running** — Deployment is Running (≥1 pod Ready).
+- [x] **07-assert-compute-running** — Deployment is Running (≥1 pod Ready).
 
-- [ ] **07-assert-db-connectivity** — `POST /write-db` from inside the pod → HTTP 200
+- [x] **07-assert-db-connectivity** — `POST /write-db` from inside the pod → HTTP 200
   - Logs show: `Connected to database successfully`
 
-- [ ] **07-assert-queue-connectivity** — `POST /publish` + `GET /subscribe` → round-trip message
+- [x] **07-assert-queue-connectivity** — `POST /publish` + `GET /subscribe` → round-trip message
   - Logs show: `Published to NATS`, `Received from NATS`
 
-- [ ] **07-assert-cache-connectivity** — `POST /cache-set` + verify read-back via `GET /status`
+- [x] **07-assert-cache-connectivity** — `POST /cache-set` + verify read-back via `GET /status`
   - Logs show: `Connected to cache successfully`
 
-- [ ] **07-assert-healthz** — `GET /healthz` returns HTTP 200 with all backends `"ok"`.
+- [x] **07-assert-healthz** — `GET /healthz` returns HTTP 200 with all backends `"ok"`.
 
-- [ ] **07-assert-logs-cmd** — `chorister logs payments --sandbox dev` tails pod logs; output contains backend status.
+- [x] **07-assert-logs-cmd** — `chorister logs payments --sandbox dev` tails pod logs; output contains backend status.
 
-- [ ] **07-assert-status-cmd** — `chorister status payments --app myapp` shows `Ready` phase for all resources.
+- [x] **07-assert-status-cmd** — `chorister status payments --app myapp` shows `Ready` phase for all resources.
 
 ---
 
@@ -380,30 +380,30 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Requires:** Cilium with Tetragon enabled in cluster.
 
-- [ ] **08-run** — `run.sh`
+- [x] **08-run** — `run.sh`
 
-- [ ] **08-setup** — Deploy `security-trigger` app in a `payments` sandbox.
+- [x] **08-setup** — Deploy `security-trigger` app in a `payments` sandbox.
   Enable `runtimeDetection: full` on the domain (or use `regulated` compliance profile).
 
-- [ ] **08-assert-vuln-scan-report** — Apply `ChoCompute` with `security-trigger` image.
+- [x] **08-assert-vuln-scan-report** — Apply `ChoCompute` with `security-trigger` image.
   - Wait for periodic vulnerability scan CronJob to run.
   - Assert `ChoVulnerabilityReport` CR is created in domain namespace.
   - `chorister admin vulnerabilities --domain payments` shows the report.
 
-- [ ] **08-assert-vuln-blocks-promotion-standard** — Set application compliance to `standard`.
+- [x] **08-assert-vuln-blocks-promotion-standard** — Set application compliance to `standard`.
   - Attempt to promote with a known-vulnerable image.
   - Assert `ChoPromotionRequest` is rejected / stays in `Failed` with scan gate message.
 
-- [ ] **08-assert-vuln-allows-promotion-clean** — Replace with a clean image.
+- [x] **08-assert-vuln-allows-promotion-clean** — Replace with a clean image.
   - Assert promotion proceeds to `Completed`.
 
-- [ ] **08-assert-tetragon-process-exec** — `POST /exec-shell` on `security-trigger` pod.
+- [x] **08-assert-tetragon-process-exec** — `POST /exec-shell` on `security-trigger` pod.
   - Assert Tetragon event is recorded (check Tetragon logs or Loki query).
 
-- [ ] **08-assert-tetragon-file-write** — `POST /write-sensitive` on `security-trigger` pod.
+- [x] **08-assert-tetragon-file-write** — `POST /write-sensitive` on `security-trigger` pod.
   - Assert Tetragon file integrity event is recorded.
 
-- [ ] **08-assert-admin-scan** — `chorister admin scan --domain payments`
+- [x] **08-assert-admin-scan** — `chorister admin scan --domain payments`
   - Assert command triggers a scan and reports findings.
 
 ---
@@ -414,25 +414,25 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Requires:** Cilium, Gateway API.
 
-- [ ] **09-run** — `run.sh`
+- [x] **09-run** — `run.sh`
 
-- [ ] **09-setup** — Create two `ChoApplication` resources:
+- [x] **09-setup** — Create two `ChoApplication` resources:
   - `retail` app with `payments` domain (consumer)
   - `capital-markets` app with `pricing` domain (supplier)
   - Declare a bilateral `link` in `retail` → `capital-markets/pricing:8080`
   - Deploy `echo-api` in both domains.
 
-- [ ] **09-assert-direct-pod-to-pod-blocked** — From `retail-payments` pod, curl `pricing` pod IP directly.
+- [x] **09-assert-direct-pod-to-pod-blocked** — From `retail-payments` pod, curl `pricing` pod IP directly.
   - Assert blocked (NetworkPolicy / Cilium).
 
-- [ ] **09-assert-httproute-and-referencegrant-exist** — `kubectl get httproute,referencegrant -A`
+- [x] **09-assert-httproute-and-referencegrant-exist** — `kubectl get httproute,referencegrant -A`
   - Assert HTTPRoute in `retail-payments` exists.
   - Assert ReferenceGrant in `capital-markets-pricing` exists.
 
-- [ ] **09-assert-traffic-via-gateway** — From `retail-payments` pod, curl the internal gateway path to `pricing`.
+- [x] **09-assert-traffic-via-gateway** — From `retail-payments` pod, curl the internal gateway path to `pricing`.
   - Assert HTTP 200.
 
-- [ ] **09-assert-undeclared-consumer-blocked** — From a third application's pod, attempt the gateway path to `pricing`.
+- [x] **09-assert-undeclared-consumer-blocked** — From a third application's pod, attempt the gateway path to `pricing`.
   - Assert HTTP 403 / blocked (CiliumNetworkPolicy L7).
 
 ---
@@ -441,31 +441,31 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/10-domain-membership/`
 
-- [ ] **10-run** — `run.sh`
+- [x] **10-run** — `run.sh`
 
-- [ ] **10-setup** — Create `ChoApplication` with `payments` domain (sensitivity: `restricted`).
+- [x] **10-setup** — Create `ChoApplication` with `payments` domain (sensitivity: `restricted`).
 
-- [ ] **10-assert-add-member-requires-expiry** — `chorister admin member add --domain payments --identity alice@co --role developer` (no `--expires-at`)
+- [x] **10-assert-add-member-requires-expiry** — `chorister admin member add --domain payments --identity alice@co --role developer` (no `--expires-at`)
   - Assert error: "expires-at is required for restricted domain"
 
-- [ ] **10-assert-add-member-with-expiry** — `chorister admin member add ... --expires-at 2027-01-01T00:00:00Z`
+- [x] **10-assert-add-member-with-expiry** — `chorister admin member add ... --expires-at 2027-01-01T00:00:00Z`
   - Assert `ChoDomainMembership` CR created.
   - Assert RoleBinding exists in sandbox namespace for alice.
 
-- [ ] **10-assert-developer-cannot-write-prod** — Using a ServiceAccount that maps to alice's role:
+- [x] **10-assert-developer-cannot-write-prod** — Using a ServiceAccount that maps to alice's role:
   - Assert `kubectl auth can-i create deployments --namespace myapp-payments --as alice@co` → `no`
 
-- [ ] **10-assert-developer-can-read-prod** — Assert `kubectl auth can-i get pods --namespace myapp-payments --as alice@co` → `yes`
+- [x] **10-assert-developer-can-read-prod** — Assert `kubectl auth can-i get pods --namespace myapp-payments --as alice@co` → `yes`
 
-- [ ] **10-assert-expired-membership-removed** — Create a membership with expiry in the past.
+- [x] **10-assert-expired-membership-removed** — Create a membership with expiry in the past.
   - Trigger reconciliation.
   - Assert RoleBinding is deleted.
   - `chorister admin member list --include-expired` shows the expired entry.
 
-- [ ] **10-assert-member-audit** — `chorister admin member audit --app myapp`
+- [x] **10-assert-member-audit** — `chorister admin member audit --app myapp`
   - Assert command flags the expired/stale membership.
 
-- [ ] **10-assert-member-remove** — `chorister admin member remove <membership-id>`
+- [x] **10-assert-member-remove** — `chorister admin member remove <membership-id>`
   - Assert `ChoDomainMembership` deleted.
   - Assert RoleBinding removed.
 
@@ -475,9 +475,9 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Location:** `test/scenarios/11-finops-budget/`
 
-- [ ] **11-run** — `run.sh`
+- [x] **11-run** — `run.sh`
 
-- [ ] **11-setup** — Create `ChoApplication` with a very small sandbox budget:
+- [x] **11-setup** — Create `ChoApplication` with a very small sandbox budget:
   ```yaml
   policy:
     sandbox:
@@ -486,18 +486,18 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
   ```
   Set `ChoCluster` finops rates so that a single `medium` database exceeds $10/month.
 
-- [ ] **11-assert-sandbox-budget-enforced** — Create a sandbox with a `medium` database.
+- [x] **11-assert-sandbox-budget-enforced** — Create a sandbox with a `medium` database.
   - Assert sandbox creation is rejected with cost breakdown message.
 
-- [ ] **11-assert-small-sandbox-allowed** — Create a sandbox with `small` compute only (under budget).
+- [x] **11-assert-small-sandbox-allowed** — Create a sandbox with `small` compute only (under budget).
   - Assert sandbox created successfully.
   - `chorister sandbox list` shows `estimatedMonthlyCost` in status.
 
-- [ ] **11-assert-budget-alert-threshold** — Add more resources to approach the budget limit.
+- [x] **11-assert-budget-alert-threshold** — Add more resources to approach the budget limit.
   - Assert `ChoApplication.status.sandbox.budgetUsagePercent` > 80.
   - Assert status condition "BudgetAlert" is set.
 
-- [ ] **11-assert-idle-auto-destroy** — Create a sandbox, set `maxIdleDays: 0` (or patch lastApplyTime to past).
+- [x] **11-assert-idle-auto-destroy** — Create a sandbox, set `maxIdleDays: 0` (or patch lastApplyTime to past).
   - Trigger reconciliation.
   - Assert sandbox namespace is deleted automatically.
   - Assert `chorister sandbox list` no longer shows it.
@@ -510,24 +510,24 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
 
 **Requires:** Cilium.
 
-- [ ] **12-run** — `run.sh`
+- [x] **12-run** — `run.sh`
 
-- [ ] **12-setup** — Create production `payments` domain with `echo-api` compute.
+- [x] **12-setup** — Create production `payments` domain with `echo-api` compute.
   - Verify it is healthy (GET /healthz returns 200).
 
-- [ ] **12-assert-crash-loop-flags-degraded** — Patch the Deployment to use a bad command that crashes.
+- [x] **12-assert-crash-loop-flags-degraded** — Patch the Deployment to use a bad command that crashes.
   - Wait for crash loop.
   - Assert `ChoApplication.status` or domain condition shows `Degraded`.
 
-- [ ] **12-assert-isolate-freezes-promotions** — `chorister admin isolate --domain payments`
+- [x] **12-assert-isolate-freezes-promotions** — `chorister admin isolate --domain payments`
   - Assert `ChoApplication.status` shows isolation flag.
   - Attempt `chorister promote --domain payments --sandbox dev`.
   - Assert promotion is rejected with isolation message.
 
-- [ ] **12-assert-isolate-tightens-network** — From another domain's pod, attempt to reach `payments` service.
+- [x] **12-assert-isolate-tightens-network** — From another domain's pod, attempt to reach `payments` service.
   - Assert blocked (isolation tightens NetworkPolicy beyond declared consumes).
 
-- [ ] **12-assert-unisolate-restores** — `chorister admin unisolate --domain payments`
+- [x] **12-assert-unisolate-restores** — `chorister admin unisolate --domain payments`
   - Restore the Deployment.
   - Assert domain condition returns to `Ready`.
   - Assert cross-domain traffic resumes.

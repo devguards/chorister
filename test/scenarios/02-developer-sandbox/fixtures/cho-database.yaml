@@ -1,0 +1,9 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDatabase
+metadata:
+  name: db
+  # Namespace will be set dynamically in assert.sh
+spec:
+  engine: postgres
+  ha: false
+  size: small

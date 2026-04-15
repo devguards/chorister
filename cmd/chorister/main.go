@@ -44,6 +44,20 @@ var (
 	date    = "unknown"
 )
 
+// setConditionOnStatus upserts a metav1.Condition in the slice.
+func setConditionOnStatus(conditions *[]metav1.Condition, condition metav1.Condition) {
+	if condition.LastTransitionTime.IsZero() {
+		condition.LastTransitionTime = metav1.Now()
+	}
+	for i, c := range *conditions {
+		if c.Type == condition.Type {
+			(*conditions)[i] = condition
+			return
+		}
+	}
+	*conditions = append(*conditions, condition)
+}
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -639,33 +653,111 @@ Use --rollback to revert production to its previous compiled state. Rollback and
 // --- approve ---
 
 func newApproveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "approve [promotion-id]",
 		Short:   "Approve a ChoPromotionRequest",
 		Long:    `Records your approval on a pending ChoPromotionRequest. When the required number of approvals is reached, the controller begins executing the promotion.`,
 		Example: "  chorister approve myproduct-payments-abc123",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("approve: id=%s (not yet implemented)\n", args[0])
+			name := args[0]
+			approver, _ := cmd.Flags().GetString("approver")
+			role, _ := cmd.Flags().GetString("role")
+			namespace, _ := cmd.Flags().GetString("namespace")
+
+			if approver == "" {
+				approver = "cli-user"
+			}
+			if role == "" {
+				role = "org-admin"
+			}
+			if namespace == "" {
+				namespace = "default"
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{}
+			if err := c.Get(cmd.Context(), types.NamespacedName{Name: name, Namespace: namespace}, pr); err != nil {
+				return fmt.Errorf("get ChoPromotionRequest %q: %w", name, err)
+			}
+
+			if pr.Status.Phase != "" && pr.Status.Phase != "Pending" {
+				return fmt.Errorf("promotion request %q is in phase %q, not Pending — cannot approve", name, pr.Status.Phase)
+			}
+
+			pr.Status.Approvals = append(pr.Status.Approvals, choristerv1alpha1.PromotionApproval{
+				Approver:   approver,
+				Role:       role,
+				ApprovedAt: metav1.Now(),
+			})
+
+			if err := c.Status().Update(cmd.Context(), pr); err != nil {
+				return fmt.Errorf("update ChoPromotionRequest status: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Approval recorded on %q by %s (role: %s)\n", name, approver, role)
 			return nil
 		},
 	}
+	cmd.Flags().String("approver", "", "Approver identity (defaults to cli-user)")
+	cmd.Flags().String("role", "", "Approver role (defaults to org-admin)")
+	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to default)")
+	return cmd
 }
 
 // --- reject ---
 
 func newRejectCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "reject [promotion-id]",
 		Short:   "Reject a ChoPromotionRequest",
 		Long:    `Permanently rejects a pending ChoPromotionRequest. The sandbox remains intact; a new promotion request must be created to try again.`,
 		Example: "  chorister reject myproduct-payments-abc123",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("reject: id=%s (not yet implemented)\n", args[0])
+			name := args[0]
+			namespace, _ := cmd.Flags().GetString("namespace")
+			if namespace == "" {
+				namespace = "default"
+			}
+
+			c, err := getClient(cmd)
+			if err != nil {
+				return err
+			}
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{}
+			if err := c.Get(cmd.Context(), types.NamespacedName{Name: name, Namespace: namespace}, pr); err != nil {
+				return fmt.Errorf("get ChoPromotionRequest %q: %w", name, err)
+			}
+
+			if pr.Status.Phase != "" && pr.Status.Phase != "Pending" {
+				return fmt.Errorf("promotion request %q is in phase %q, not Pending — cannot reject", name, pr.Status.Phase)
+			}
+
+			pr.Status.Phase = "Rejected"
+			setConditionOnStatus(&pr.Status.Conditions, metav1.Condition{
+				Type:               "Rejected",
+				Status:             metav1.ConditionTrue,
+				Reason:             "ManuallyRejected",
+				Message:            "Promotion request was rejected via CLI",
+				ObservedGeneration: pr.Generation,
+			})
+
+			if err := c.Status().Update(cmd.Context(), pr); err != nil {
+				return fmt.Errorf("update ChoPromotionRequest status: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Promotion request %q rejected\n", name)
 			return nil
 		},
 	}
+	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to default)")
+	return cmd
 }
 
 // --- requests ---

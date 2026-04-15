@@ -1,0 +1,17 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: api
+spec:
+  application: scen06-myapp
+  domain: payments
+  image: nginx:latest
+  replicas: 1
+  port: 8080
+  variant: long-running
+  env:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: payments--database--ledger-credentials
+          key: url

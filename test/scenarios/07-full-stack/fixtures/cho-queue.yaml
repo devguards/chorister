@@ -1,0 +1,9 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoQueue
+metadata:
+  name: events
+spec:
+  application: scen07-myapp
+  domain: payments
+  broker: nats
+  size: small

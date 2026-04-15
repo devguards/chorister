@@ -1,0 +1,11 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: echo-api
+spec:
+  image: chorister-scenario/echo-api:latest
+  replicas: 1
+  size: small
+  ports:
+    - containerPort: 8080
+      protocol: TCP

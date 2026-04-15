@@ -1,0 +1,9 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDatabase
+metadata:
+  name: ledger
+spec:
+  application: scen06-myapp
+  domain: payments
+  engine: postgres
+  size: small

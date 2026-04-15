@@ -1,0 +1,16 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: scen01-myapp
+spec:
+  owners:
+    - platform-admin@example.com
+  policy:
+    compliance: essential
+    promotion:
+      requiredApprovals: 1
+  domains:
+    - name: payments
+      sensitivity: internal
+    - name: auth
+      sensitivity: internal

@@ -1,0 +1,22 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCluster
+metadata:
+  name: default
+  namespace: cho-system
+spec:
+  finops:
+    rates:
+      compute:
+        small: "1.00"   # $/month
+        medium: "5.00"
+        large: "15.00"
+      database:
+        small: "3.00"
+        medium: "12.00"  # exceeds $10 budget alone
+        large: "30.00"
+      cache:
+        small: "2.00"
+        medium: "8.00"
+      queue:
+        small: "1.00"
+        medium: "4.00"

@@ -1,0 +1,58 @@
+---
+# Mock JWKS server — issues test JWTs signed with a static key pair.
+# Endpoints:
+#   GET /jwks  → JWK Set (public key)
+#   GET /token → signs a JWT valid for test use
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-jwks
+  namespace: cho-system
+  labels:
+    app: mock-jwks
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-jwks
+  template:
+    metadata:
+      labels:
+        app: mock-jwks
+    spec:
+      containers:
+        - name: mock-jwks
+          image: nginx:alpine
+          ports:
+            - containerPort: 8080
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              mkdir -p /etc/nginx/conf.d
+              # Provide a static JWKS (for testing only — not production keys)
+              cat > /srv/jwks.json <<'EOF'
+              {"keys":[{"kty":"oct","k":"c2VjcmV0LWtleS1mb3ItdGVzdGluZy1vbmx5LW5vdC1mb3ItcHJvZHVjdGlvbg","kid":"test-key-1","alg":"HS256"}]}
+              EOF
+              # A pre-signed HS256 JWT for the test issuer (expires 2099-01-01)
+              echo "eyJhbGciOiJIUzI1NiIsImtpZCI6InRlc3Qta2V5LTEifQ.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJpc3MiOiJodHRwczovL3Rlc3QuY2hvcmlzdGVyLmRldiIsImV4cCI6NDA3MDkwODgwMH0.placeholder" > /srv/token.txt
+              cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+              server {
+                listen 8080;
+                location /jwks { root /srv; index jwks.json; try_files /jwks.json =404; add_header Content-Type application/json; }
+                location /token { root /srv; index token.txt; try_files /token.txt =404; add_header Content-Type text/plain; }
+                location /healthz { return 200 'ok'; add_header Content-Type text/plain; }
+              }
+              NGINX
+              nginx -g "daemon off;"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-jwks
+  namespace: cho-system
+spec:
+  selector:
+    app: mock-jwks
+  ports:
+    - port: 8080
+      targetPort: 8080

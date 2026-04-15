@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo-api
+  labels:
+    app: echo-api
+spec:
+  containers:
+    - name: echo-api
+      image: nginx:latest
+      ports:
+        - containerPort: 8080
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          cat <<'HTML' > /tmp/index.html
+          {"status":"ok"}
+          HTML
+          mkdir -p /etc/nginx/conf.d
+          cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+          server {
+            listen 8080;
+            location /healthz { return 200 '{"status":"ok"}'; add_header Content-Type application/json; }
+            location / { return 200 '{"status":"ok"}'; add_header Content-Type application/json; }
+          }
+          NGINX
+          nginx -g "daemon off;"

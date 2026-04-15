@@ -1,0 +1,26 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: scen04-myapp
+spec:
+  owners:
+    - platform-admin@example.com
+  policy:
+    compliance: essential
+    promotion:
+      requiredApprovals: 0
+  domains:
+    - name: payments
+      sensitivity: internal
+      network:
+        consumes:
+          - app: scen04-myapp
+            domain: auth
+            port: 8080
+    - name: auth
+      sensitivity: internal
+      network:
+        supplies:
+          - port: 8080
+    - name: unrelated
+      sensitivity: internal

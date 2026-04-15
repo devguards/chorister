@@ -1,0 +1,11 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: scen09-capital
+  namespace: cho-system
+spec:
+  domains:
+    - name: pricing
+      sensitivity: internal
+      supplies:
+        - port: 8080

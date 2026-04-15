@@ -1,0 +1,10 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: security-trigger
+spec:
+  image: chorister-scenario/security-trigger:latest
+  replicas: 1
+  ports:
+    - containerPort: 8080
+      protocol: TCP

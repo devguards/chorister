@@ -1,0 +1,13 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: scen11-myapp
+  namespace: cho-system
+spec:
+  domains:
+    - name: payments
+      sensitivity: internal
+  policy:
+    sandbox:
+      defaultBudgetPerDomain: "$10/month"
+      maxIdleDays: 1

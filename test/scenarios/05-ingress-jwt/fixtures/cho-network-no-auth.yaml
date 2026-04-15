@@ -1,0 +1,12 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoNetwork
+metadata:
+  name: no-auth-network
+spec:
+  application: scen05-myapp
+  domain: payments
+  ingress:
+    from: internet
+    port: 443
+    routes:
+      /api/*: {}

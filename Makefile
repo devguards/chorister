@@ -102,6 +102,16 @@ e2e-lite: test-e2e-lite ## Alias for the fast plain-Kind e2e run
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+SCENARIO_CLUSTER ?= chorister-scenario
+
+.PHONY: test-scenarios
+test-scenarios: build ## Run all scenario tests (sequential, single cluster)
+	bash test/scenarios/run-all.sh --cluster-name $(SCENARIO_CLUSTER)
+
+.PHONY: test-scenario
+test-scenario: build ## Run a single scenario: make test-scenario SCENARIO=01
+	bash test/scenarios/run-all.sh --cluster-name $(SCENARIO_CLUSTER) --scenario $(SCENARIO)
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

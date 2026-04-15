@@ -1,0 +1,13 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: echo-api
+  # Namespace will be set dynamically in assert.sh
+spec:
+  image: chorister-scenario/echo-api:latest
+  replicas: 1
+  port: 8080
+  variant: long-running
+  env:
+    - name: PORT
+      value: "8080"

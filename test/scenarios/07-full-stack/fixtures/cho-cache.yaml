@@ -1,0 +1,9 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCache
+metadata:
+  name: session
+spec:
+  application: scen07-myapp
+  domain: payments
+  engine: redis
+  size: small

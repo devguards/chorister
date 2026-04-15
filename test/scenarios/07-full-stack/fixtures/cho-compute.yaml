@@ -1,0 +1,11 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: echo-api
+spec:
+  application: scen07-myapp
+  domain: payments
+  image: nginx:latest
+  replicas: 1
+  port: 8080
+  variant: long-running

@@ -1,0 +1,12 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDomainMembership
+metadata:
+  name: scen10-expired-member
+  namespace: cho-system
+spec:
+  app: scen10-myapp
+  domain: payments
+  identity: bob@chorister-test.dev
+  role: developer
+  expiresAt: "2020-01-01T00:00:00Z"
+  source: manual
