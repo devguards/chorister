@@ -13,6 +13,7 @@ resources:
 - bases/chorister.dev_chopromotionrequests.yaml
 - bases/chorister.dev_choclusters.yaml
 - bases/chorister.dev_chosandboxes.yaml
+- bases/chorister.dev_chovulnerabilityreports.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

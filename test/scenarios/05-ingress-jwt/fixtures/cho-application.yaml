@@ -2,13 +2,14 @@ apiVersion: chorister.dev/v1alpha1
 kind: ChoApplication
 metadata:
   name: scen05-myapp
+  namespace: cho-system
 spec:
   owners:
     - platform-admin@example.com
   policy:
     compliance: essential
     promotion:
-      requiredApprovals: 0
+      requiredApprovers: 1
   domains:
     - name: payments
       sensitivity: internal

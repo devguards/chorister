@@ -31,7 +31,7 @@ setup() {
   kctl apply -f "${SCRIPT_DIR}/fixtures/cho-database-ledger.yaml" -n "$SANDBOX_NS"
   kctl apply -f "${SCRIPT_DIR}/fixtures/cho-compute-api.yaml" -n "$SANDBOX_NS"
 
-  # Promote to production (requiredApprovals: 0 → auto-complete)
+  # Promote to production (requiredApprovers: 1 → needs approval)
   cho promote --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 
   # Wait for ChoPromotionRequest to complete

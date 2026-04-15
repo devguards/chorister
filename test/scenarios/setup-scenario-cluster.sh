@@ -104,6 +104,14 @@ deploy_controller() {
   log "Building chorister binaries"
   run make -C "$PROJECT_ROOT" build
 
+  local IMG="${CONTROLLER_IMG:-controller:latest}"
+
+  log "Building controller image: ${IMG}"
+  run make -C "$PROJECT_ROOT" docker-build IMG="$IMG"
+
+  log "Loading controller image into Kind cluster ${CLUSTER_NAME}"
+  run kind load docker-image "$IMG" --name "$CLUSTER_NAME"
+
   log "Installing CRDs into cluster"
   run kubectl --context "$(kind_context)" apply \
     -k "${PROJECT_ROOT}/config/crd"

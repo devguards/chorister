@@ -37,6 +37,12 @@ import (
 	"github.com/chorister-dev/chorister/internal/report"
 )
 
+const (
+	// controlPlaneNamespace is the canonical namespace for all chorister
+	// control-plane CRDs (ChoApplication, ChoSandbox, ChoPromotionRequest, etc.).
+	controlPlaneNamespace = "cho-system"
+)
+
 var (
 	// Set via -ldflags at build time.
 	version = "dev"
@@ -148,8 +154,7 @@ func newLoginCmd() *cobra.Command {
 		Long:    `Initiates an OIDC device-flow authentication and stores credentials for subsequent CLI calls. The OIDC provider is configured in the ChoCluster resource.`,
 		Example: "  chorister login",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("login: not yet implemented")
-			return nil
+			return fmt.Errorf("login: not yet implemented")
 		},
 	}
 }
@@ -180,7 +185,7 @@ func newApplyCmd() *cobra.Command {
 			}
 
 			fmt.Printf("apply: targeting domain=%s sandbox=%s (not yet implemented)\n", domain, sandbox)
-			return nil
+			return fmt.Errorf("apply: not yet implemented")
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
@@ -252,7 +257,7 @@ func newSandboxCreateCmd() *cobra.Command {
 			sb := &choristerv1alpha1.ChoSandbox{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: app + "-" + domain + "-",
-					Namespace:    "default",
+					Namespace:    controlPlaneNamespace,
 				},
 				Spec: choristerv1alpha1.ChoSandboxSpec{
 					Application: app,
@@ -434,7 +439,7 @@ func newDiffCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "diff: app=%s domain=%s sandbox=%s (not yet implemented — awaiting compilation integration)\n", app, domain, sandbox)
-			return nil
+			return fmt.Errorf("diff: not yet implemented")
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
@@ -616,7 +621,7 @@ Use --rollback to revert production to its previous compiled state. Rollback and
 			pr := &choristerv1alpha1.ChoPromotionRequest{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: fmt.Sprintf("%s-%s-", app, domain),
-					Namespace:    "default",
+					Namespace:    controlPlaneNamespace,
 				},
 				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
 					Application: app,
@@ -672,7 +677,7 @@ func newApproveCmd() *cobra.Command {
 				role = "org-admin"
 			}
 			if namespace == "" {
-				namespace = "default"
+				namespace = controlPlaneNamespace
 			}
 
 			c, err := getClient(cmd)
@@ -705,7 +710,7 @@ func newApproveCmd() *cobra.Command {
 	}
 	cmd.Flags().String("approver", "", "Approver identity (defaults to cli-user)")
 	cmd.Flags().String("role", "", "Approver role (defaults to org-admin)")
-	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to default)")
+	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to cho-system)")
 	return cmd
 }
 
@@ -722,7 +727,7 @@ func newRejectCmd() *cobra.Command {
 			name := args[0]
 			namespace, _ := cmd.Flags().GetString("namespace")
 			if namespace == "" {
-				namespace = "default"
+				namespace = controlPlaneNamespace
 			}
 
 			c, err := getClient(cmd)
@@ -756,7 +761,7 @@ func newRejectCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to default)")
+	cmd.Flags().String("namespace", "", "Namespace of the promotion request (defaults to cho-system)")
 	return cmd
 }
 
@@ -849,8 +854,7 @@ func newAdminAppCmd() *cobra.Command {
 			Short: "Create a ChoApplication",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Printf("admin app create: %s (not yet implemented)\n", args[0])
-				return nil
+				return fmt.Errorf("admin app create: not yet implemented")
 			},
 		},
 		newAdminAppSetPolicyCmd(),
@@ -1071,8 +1075,7 @@ func newAdminDomainCmd() *cobra.Command {
 			Short: "Create a domain within an application",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Printf("admin domain create: %s (not yet implemented)\n", args[0])
-				return nil
+				return fmt.Errorf("admin domain create: not yet implemented")
 			},
 		},
 	)
@@ -1285,8 +1288,7 @@ func newAdminMemberCmd() *cobra.Command {
 			Use:   "remove",
 			Short: "Remove a member from a domain",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				fmt.Println("admin member remove: (not yet implemented)")
-				return nil
+				return fmt.Errorf("admin member remove: not yet implemented")
 			},
 		},
 	)
@@ -1354,7 +1356,7 @@ func newAdminMemberAddCmd() *cobra.Command {
 			// Build the ChoDomainMembership
 			membership := &choristerv1alpha1.ChoDomainMembership{}
 			membership.GenerateName = appName + "-" + domainName + "-"
-			membership.Namespace = "default"
+			membership.Namespace = controlPlaneNamespace
 			membership.Spec.Application = appName
 			membership.Spec.Domain = domainName
 			membership.Spec.Identity = identity

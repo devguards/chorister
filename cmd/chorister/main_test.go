@@ -298,7 +298,7 @@ func TestCLI_AdminUpgradeBlueGreen(t *testing.T) {
 
 	s := testScheme()
 	cluster := &choristerv1alpha1.ChoCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "chorister-cluster", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "chorister-cluster", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoClusterSpec{ControllerRevision: "v1.0.0"},
 	}
 
@@ -756,7 +756,7 @@ func TestCLI_Status_SingleDomain(t *testing.T) {
 		{Name: "payments"},
 	}, "Ready", "essential")
 	sb := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co.com"},
 		Status:     choristerv1alpha1.ChoSandboxStatus{Phase: "Active", Namespace: "myproduct-payments-sbx-alice"},
 	}
@@ -796,7 +796,7 @@ func TestCLI_Logs_NoComponent(t *testing.T) {
 	sbNs := "myproduct-payments-sbx-alice"
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	sb := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co"},
 		Status:     choristerv1alpha1.ChoSandboxStatus{Namespace: sbNs, Phase: "Active"},
 	}
@@ -821,7 +821,7 @@ func TestCLI_SandboxStatus(t *testing.T) {
 	s := testScheme()
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	sb := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co.com"},
 		Status: choristerv1alpha1.ChoSandboxStatus{
 			Phase:                "Active",
@@ -858,12 +858,12 @@ func TestCLI_SandboxList(t *testing.T) {
 	s := testScheme()
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	sb1 := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co.com"},
 		Status:     choristerv1alpha1.ChoSandboxStatus{Phase: "Active", EstimatedMonthlyCost: "12.50"},
 	}
 	sb2 := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-bob", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-bob", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "bob", Owner: "bob@co.com"},
 		Status:     choristerv1alpha1.ChoSandboxStatus{Phase: "Active", EstimatedMonthlyCost: "8.00"},
 	}
@@ -909,14 +909,14 @@ func TestCLI_Events(t *testing.T) {
 func TestCLI_Requests(t *testing.T) {
 	s := testScheme()
 	pr1 := &choristerv1alpha1.ChoPromotionRequest{
-		ObjectMeta: metav1.ObjectMeta{Name: "pr-1", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-1", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec: choristerv1alpha1.ChoPromotionRequestSpec{
 			Application: "myproduct", Domain: "payments", Sandbox: "alice", RequestedBy: "alice@co.com",
 		},
 		Status: choristerv1alpha1.ChoPromotionRequestStatus{Phase: "Pending"},
 	}
 	pr2 := &choristerv1alpha1.ChoPromotionRequest{
-		ObjectMeta: metav1.ObjectMeta{Name: "pr-2", Namespace: "default", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "pr-2", Namespace: "cho-system", CreationTimestamp: metav1.Now()},
 		Spec: choristerv1alpha1.ChoPromotionRequestSpec{
 			Application: "myproduct", Domain: "auth", Sandbox: "bob", RequestedBy: "bob@co.com",
 		},
@@ -983,14 +983,13 @@ func TestCLI_Diff_OutputFlag(t *testing.T) {
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	fc := fake.NewClientBuilder().WithScheme(s).WithObjects(app).Build()
 
-	// Should accept --output flag without error
-	out, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct", "--output", "json")
-	if err != nil {
-		t.Fatalf("diff --output json error: %v", err)
+	// Should accept --output flag — diff is a stub that returns an error
+	_, err := executeCmdWithClient(fc, "diff", "--domain", "payments", "--sandbox", "alice", "--app", "myproduct", "--output", "json")
+	if err == nil {
+		t.Fatal("diff should return an error (not yet implemented)")
 	}
-	// At minimum it should print something (currently stub)
-	if out == "" {
-		t.Fatal("diff output should not be empty")
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("diff error should mention 'not yet implemented', got: %s", err.Error())
 	}
 }
 
@@ -1002,14 +1001,14 @@ func TestCLI_AdminVulnList(t *testing.T) {
 	s := testScheme()
 	now := metav1.Now()
 	vr1 := &choristerv1alpha1.ChoVulnerabilityReport{
-		ObjectMeta: metav1.ObjectMeta{Name: "vr-payments", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "vr-payments", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoVulnerabilityReportSpec{Application: "myproduct", Domain: "payments"},
 		Status: choristerv1alpha1.ChoVulnerabilityReportStatus{
 			Phase: "Completed", Scanner: "trivy", CriticalCount: 2, ScannedAt: &now,
 		},
 	}
 	vr2 := &choristerv1alpha1.ChoVulnerabilityReport{
-		ObjectMeta: metav1.ObjectMeta{Name: "vr-auth", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "vr-auth", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoVulnerabilityReportSpec{Application: "myproduct", Domain: "auth"},
 		Status: choristerv1alpha1.ChoVulnerabilityReportStatus{
 			Phase: "Completed", Scanner: "trivy", CriticalCount: 0, ScannedAt: &now,
@@ -1037,7 +1036,7 @@ func TestCLI_AdminVulnGet(t *testing.T) {
 	s := testScheme()
 	now := metav1.Now()
 	vr := &choristerv1alpha1.ChoVulnerabilityReport{
-		ObjectMeta: metav1.ObjectMeta{Name: "vr-payments", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "vr-payments", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoVulnerabilityReportSpec{Application: "myproduct", Domain: "payments"},
 		Status: choristerv1alpha1.ChoVulnerabilityReportStatus{
 			Phase: "Completed", Scanner: "trivy", CriticalCount: 1, ScannedAt: &now,
@@ -1142,7 +1141,7 @@ func TestCLI_AdminComplianceReport(t *testing.T) {
 	s := testScheme()
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	cluster := &choristerv1alpha1.ChoCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "chorister-cluster", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "chorister-cluster", Namespace: "cho-system"},
 		Status: choristerv1alpha1.ChoClusterStatus{
 			Phase:          "Ready",
 			CISBenchmark:   "Pass",
@@ -1198,7 +1197,7 @@ func TestCLI_AdminFinOpsReport(t *testing.T) {
 	s := testScheme()
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments"}}, "Ready", "essential")
 	sb := &choristerv1alpha1.ChoSandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct-payments-alice", Namespace: "cho-system"},
 		Spec:       choristerv1alpha1.ChoSandboxSpec{Application: "myproduct", Domain: "payments", Name: "alice", Owner: "alice@co.com"},
 		Status:     choristerv1alpha1.ChoSandboxStatus{EstimatedMonthlyCost: "12.50"},
 	}
@@ -1405,14 +1404,14 @@ func TestCLI_AdminMemberAdd_RestrictedRequiresExpiry(t *testing.T) {
 func TestCLI_AdminMemberList(t *testing.T) {
 	s := testScheme()
 	m1 := &choristerv1alpha1.ChoDomainMembership{
-		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "cho-system"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myproduct", Domain: "payments", Identity: "alice@co.com", Role: "developer",
 		},
 		Status: choristerv1alpha1.ChoDomainMembershipStatus{Phase: "Active"},
 	}
 	m2 := &choristerv1alpha1.ChoDomainMembership{
-		ObjectMeta: metav1.ObjectMeta{Name: "m2", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "m2", Namespace: "cho-system"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myproduct", Domain: "payments", Identity: "bob@co.com", Role: "viewer",
 		},
@@ -1434,13 +1433,13 @@ func TestCLI_AdminMemberList(t *testing.T) {
 func TestCLI_AdminMemberList_FilterByRole(t *testing.T) {
 	s := testScheme()
 	m1 := &choristerv1alpha1.ChoDomainMembership{
-		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "cho-system"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myproduct", Domain: "payments", Identity: "alice@co.com", Role: "developer",
 		},
 	}
 	m2 := &choristerv1alpha1.ChoDomainMembership{
-		ObjectMeta: metav1.ObjectMeta{Name: "m2", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "m2", Namespace: "cho-system"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myproduct", Domain: "payments", Identity: "bob@co.com", Role: "viewer",
 		},
@@ -1468,7 +1467,7 @@ func TestCLI_AdminMemberAudit(t *testing.T) {
 	app := testApp("myproduct", []choristerv1alpha1.DomainSpec{{Name: "payments", Sensitivity: "restricted"}}, "Ready", "regulated")
 	// Member without expiry on restricted domain → should be flagged
 	m := &choristerv1alpha1.ChoDomainMembership{
-		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "m1", Namespace: "cho-system"},
 		Spec: choristerv1alpha1.ChoDomainMembershipSpec{
 			Application: "myproduct", Domain: "payments", Identity: "alice@co.com", Role: "developer",
 		},
@@ -1558,5 +1557,59 @@ func TestCLI_AdminExportConfig_RequiresApp(t *testing.T) {
 	_, err := executeCmd("admin", "export-config")
 	if err == nil {
 		t.Fatal("Expected error without --app")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unimplemented commands must fail with non-zero exit code
+// ---------------------------------------------------------------------------
+
+func TestCLI_Login_NotImplemented(t *testing.T) {
+	_, err := executeCmd("login")
+	if err == nil {
+		t.Fatal("login should return an error (not yet implemented)")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("login error should mention 'not yet implemented', got: %s", err.Error())
+	}
+}
+
+func TestCLI_AdminAppCreate_NotImplemented(t *testing.T) {
+	_, err := executeCmd("admin", "app", "create", "testapp")
+	if err == nil {
+		t.Fatal("admin app create should return an error (not yet implemented)")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("admin app create error should mention 'not yet implemented', got: %s", err.Error())
+	}
+}
+
+func TestCLI_AdminDomainCreate_NotImplemented(t *testing.T) {
+	_, err := executeCmd("admin", "domain", "create", "testdomain")
+	if err == nil {
+		t.Fatal("admin domain create should return an error (not yet implemented)")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("admin domain create error should mention 'not yet implemented', got: %s", err.Error())
+	}
+}
+
+func TestCLI_AdminMemberRemove_NotImplemented(t *testing.T) {
+	_, err := executeCmd("admin", "member", "remove")
+	if err == nil {
+		t.Fatal("admin member remove should return an error (not yet implemented)")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("admin member remove error should mention 'not yet implemented', got: %s", err.Error())
+	}
+}
+
+func TestCLI_Apply_NotImplemented(t *testing.T) {
+	_, err := executeCmd("apply", "--domain", "payments", "--sandbox", "alice")
+	if err == nil {
+		t.Fatal("apply should return an error (not yet implemented)")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("apply error should mention 'not yet implemented', got: %s", err.Error())
 	}
 }
