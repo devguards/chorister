@@ -172,8 +172,6 @@ func TestCLI_AdminMemberAudit_FlagsStale(t *testing.T) {
 }
 
 func TestCLI_AdminResourceDeleteArchived(t *testing.T) {
-	t.Skip("awaiting Phase 18: archive lifecycle implementation")
-
 	// admin resource delete --archived requires explicit target
 	_, err := executeCmd("admin", "resource", "delete")
 	if err == nil {

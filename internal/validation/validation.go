@@ -19,7 +19,9 @@ package validation
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 )
@@ -259,4 +261,80 @@ func sensitivityToLevel(s string) int {
 	default:
 		return 2 // default to internal
 	}
+}
+
+// ValidateArchiveRetentionMinimum checks that archive retention is at least 30 days.
+func ValidateArchiveRetentionMinimum(app *choristerv1alpha1.ChoApplication) []string {
+	if app.Spec.Policy.ArchiveRetention == "" {
+		return nil // default 30d is acceptable
+	}
+	duration, err := ParseRetentionDuration(app.Spec.Policy.ArchiveRetention)
+	if err != nil {
+		return []string{fmt.Sprintf(
+			"invalid archiveRetention format %q: %v",
+			app.Spec.Policy.ArchiveRetention, err,
+		)}
+	}
+	minRetention := 30 * 24 * time.Hour
+	if duration < minRetention {
+		return []string{fmt.Sprintf(
+			"archiveRetention %q is below minimum 30 days; set to at least \"30d\"",
+			app.Spec.Policy.ArchiveRetention,
+		)}
+	}
+	return nil
+}
+
+// ValidateArchivedResourceDependencies checks that no active compute resources
+// share a domain with archived stateful resources.
+func ValidateArchivedResourceDependencies(
+	databases []choristerv1alpha1.ChoDatabase,
+	queues []choristerv1alpha1.ChoQueue,
+	storages []choristerv1alpha1.ChoStorage,
+) []string {
+	var errs []string
+	for i := range databases {
+		if databases[i].Status.Lifecycle == "Archived" {
+			errs = append(errs, fmt.Sprintf(
+				"ChoDatabase %q in namespace %q is archived; remove references from dependent resources before promoting",
+				databases[i].Name, databases[i].Namespace,
+			))
+		}
+	}
+	for i := range queues {
+		if queues[i].Status.Lifecycle == "Archived" {
+			errs = append(errs, fmt.Sprintf(
+				"ChoQueue %q in namespace %q is archived; remove references from dependent resources before promoting",
+				queues[i].Name, queues[i].Namespace,
+			))
+		}
+	}
+	for i := range storages {
+		if storages[i].Status.Lifecycle == "Archived" {
+			errs = append(errs, fmt.Sprintf(
+				"ChoStorage %q in namespace %q is archived; remove references from dependent resources before promoting",
+				storages[i].Name, storages[i].Namespace,
+			))
+		}
+	}
+	return errs
+}
+
+// ParseRetentionDuration parses a retention duration string (e.g. "30d", "1y", "90d").
+func ParseRetentionDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid days value: %w", err)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	if strings.HasSuffix(s, "y") {
+		years, err := strconv.Atoi(strings.TrimSuffix(s, "y"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid years value: %w", err)
+		}
+		return time.Duration(years) * 365 * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
 }

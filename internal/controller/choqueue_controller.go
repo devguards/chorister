@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,8 @@ import (
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 )
+
+const queueFinalizerName = "chorister.dev/queue-archive"
 
 // queueSizeMap maps size names to resource requirements for NATS.
 var queueSizeMap = map[string]corev1.ResourceRequirements{
@@ -96,6 +99,29 @@ func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// Handle deletion via finalizer
+	if !queue.DeletionTimestamp.IsZero() {
+		return r.handleQueueDeletion(ctx, queue)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(queue, queueFinalizerName) {
+		controllerutil.AddFinalizer(queue, queueFinalizerName)
+		if err := r.Update(ctx, queue); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Handle archived/deletable lifecycle states
+	if queue.Status.Lifecycle == "Archived" {
+		return r.handleQueueArchived(ctx, queue)
+	}
+	if queue.Status.Lifecycle == "Deletable" {
+		return ctrl.Result{}, nil
+	}
+
+	// ---- Normal Active reconciliation ----
+
 	// Reconcile the NATS StatefulSet
 	if err := r.reconcileStatefulSet(ctx, queue); err != nil {
 		return ctrl.Result{}, err
@@ -141,6 +167,71 @@ func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("Reconciled ChoQueue", "name", queue.Name, "type", queue.Spec.Type)
 	return ctrl.Result{}, nil
+}
+
+// handleQueueDeletion processes the finalizer on deletion.
+func (r *ChoQueueReconciler) handleQueueDeletion(ctx context.Context, queue *choristerv1alpha1.ChoQueue) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(queue, queueFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
+	// Check if in sandbox namespace — immediate deletion
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: queue.Namespace}, ns); err == nil {
+		if _, ok := ns.Labels[labelSandbox]; ok {
+			log.Info("Deleting sandbox ChoQueue immediately", "name", queue.Name)
+			controllerutil.RemoveFinalizer(queue, queueFinalizerName)
+			return ctrl.Result{}, r.Update(ctx, queue)
+		}
+	}
+
+	// Production: remove finalizer to allow deletion
+	controllerutil.RemoveFinalizer(queue, queueFinalizerName)
+	return ctrl.Result{}, r.Update(ctx, queue)
+}
+
+// handleQueueArchived checks retention and transitions Archived → Deletable.
+func (r *ChoQueueReconciler) handleQueueArchived(ctx context.Context, queue *choristerv1alpha1.ChoQueue) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	queue.Status.Ready = false
+	setCondition(&queue.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "Archived",
+		Message:            "ChoQueue is archived; data preserved but not actively managed",
+		ObservedGeneration: queue.Generation,
+	})
+
+	if queue.Status.DeletableAfter != nil && time.Now().After(queue.Status.DeletableAfter.Time) {
+		queue.Status.Lifecycle = "Deletable"
+		setCondition(&queue.Status.Conditions, metav1.Condition{
+			Type:               "Deletable",
+			Status:             metav1.ConditionTrue,
+			Reason:             "RetentionExpired",
+			Message:            "Archive retention period expired; resource eligible for explicit deletion",
+			ObservedGeneration: queue.Generation,
+		})
+		if err := r.Status().Update(ctx, queue); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("ChoQueue transitioned to Deletable", "name", queue.Name)
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.Status().Update(ctx, queue); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if queue.Status.DeletableAfter != nil {
+		requeueAfter := time.Until(queue.Status.DeletableAfter.Time)
+		if requeueAfter > 0 {
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	}
+	return ctrl.Result{RequeueAfter: time.Hour}, nil
 }
 
 func (r *ChoQueueReconciler) reconcileStatefulSet(ctx context.Context, queue *choristerv1alpha1.ChoQueue) error {

@@ -46,7 +46,7 @@ func TestE2E_AdminIsolateDomain(t *testing.T) {
 func TestE2E_ArchivedResourceBlocksPromotion(t *testing.T) {
 	feature := features.New("archived resource blocks promotion").
 		Assess("removing production database archives it and blocks dependent promotions", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 18: archive lifecycle and retention policies")
+			t.Skip("e2e: requires full Kind cluster with controller deployed — covered by envtest unit tests")
 
 			// Remove a production database → archived
 			// Promote compute that depends on the database → rejected
@@ -60,7 +60,7 @@ func TestE2E_ArchivedResourceBlocksPromotion(t *testing.T) {
 func TestE2E_AdminDeleteArchivedResource(t *testing.T) {
 	feature := features.New("admin delete archived resource").
 		Assess("archived stateful resource requires explicit admin delete after retention", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 18: archive lifecycle and retention policies")
+			t.Skip("e2e: requires full Kind cluster with controller deployed — covered by envtest unit tests")
 
 			// chorister admin resource delete --archived <name>
 			// Assert: resource deleted only after retention window

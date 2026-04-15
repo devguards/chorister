@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,6 +33,7 @@ import (
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/scanning"
+	"github.com/chorister-dev/chorister/internal/validation"
 )
 
 // ChoPromotionRequestReconciler reconciles a ChoPromotionRequest object
@@ -178,6 +181,19 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 				Status:             metav1.ConditionTrue,
 				Reason:             "ExecutionFailed",
 				Message:            fmt.Sprintf("Failed to copy resources: %v", err),
+				ObservedGeneration: pr.Generation,
+			})
+			return ctrl.Result{}, r.Status().Update(ctx, pr)
+		}
+
+		// Archive stateful resources that exist in production but not in sandbox
+		if err := r.archiveOrphanedStatefulResources(ctx, sandboxNs, prodNs, pr); err != nil {
+			pr.Status.Phase = "Failed"
+			setCondition(&pr.Status.Conditions, metav1.Condition{
+				Type:               "Failed",
+				Status:             metav1.ConditionTrue,
+				Reason:             "ArchiveFailed",
+				Message:            fmt.Sprintf("Failed to archive orphaned resources: %v", err),
 				ObservedGeneration: pr.Generation,
 			})
 			return ctrl.Result{}, r.Status().Update(ctx, pr)
@@ -474,6 +490,178 @@ func (r *ChoPromotionRequestReconciler) runPromotionSecurityScan(ctx context.Con
 	report.Status.Phase = "Passed"
 	setCondition(&report.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "ScanPassed", Message: "Promotion scan completed without critical findings"})
 	return false, r.Status().Update(ctx, report)
+}
+
+// archiveOrphanedStatefulResources transitions stateful resources to Archived
+// when they exist in production but not in sandbox.
+func (r *ChoPromotionRequestReconciler) archiveOrphanedStatefulResources(
+	ctx context.Context, sandboxNs, prodNs string, pr *choristerv1alpha1.ChoPromotionRequest,
+) error {
+	log := logf.FromContext(ctx)
+	retention := r.getArchiveRetention(ctx, pr)
+
+	// Archive orphaned ChoDatabase resources
+	if err := r.archiveOrphanedDatabases(ctx, sandboxNs, prodNs, retention, log); err != nil {
+		return err
+	}
+
+	// Archive orphaned ChoQueue resources
+	if err := r.archiveOrphanedQueues(ctx, sandboxNs, prodNs, retention, log); err != nil {
+		return err
+	}
+
+	// Archive orphaned ChoStorage resources
+	if err := r.archiveOrphanedStorages(ctx, sandboxNs, prodNs, retention, log); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *ChoPromotionRequestReconciler) archiveOrphanedDatabases(
+	ctx context.Context, sandboxNs, prodNs string, retention time.Duration, log logr.Logger,
+) error {
+	sandboxDBs := &choristerv1alpha1.ChoDatabaseList{}
+	if err := r.List(ctx, sandboxDBs, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoDatabases: %w", err)
+	}
+	sandboxNames := make(map[string]bool, len(sandboxDBs.Items))
+	for _, db := range sandboxDBs.Items {
+		sandboxNames[db.Name] = true
+	}
+
+	prodDBs := &choristerv1alpha1.ChoDatabaseList{}
+	if err := r.List(ctx, prodDBs, client.InNamespace(prodNs)); err != nil {
+		return fmt.Errorf("listing production ChoDatabases: %w", err)
+	}
+
+	for i := range prodDBs.Items {
+		db := &prodDBs.Items[i]
+		if sandboxNames[db.Name] || db.Status.Lifecycle == "Archived" || db.Status.Lifecycle == "Deletable" {
+			continue
+		}
+		now := metav1.Now()
+		deletableAfter := metav1.NewTime(now.Add(retention))
+		db.Status.Lifecycle = "Archived"
+		db.Status.ArchivedAt = &now
+		db.Status.DeletableAfter = &deletableAfter
+		db.Status.Ready = false
+		setCondition(&db.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "Archived",
+			Message: "Resource archived during promotion (removed from sandbox DSL)",
+		})
+		if err := r.Status().Update(ctx, db); err != nil {
+			return fmt.Errorf("archiving ChoDatabase %s: %w", db.Name, err)
+		}
+		log.Info("Archived orphaned ChoDatabase", "name", db.Name, "namespace", prodNs)
+	}
+	return nil
+}
+
+func (r *ChoPromotionRequestReconciler) archiveOrphanedQueues(
+	ctx context.Context, sandboxNs, prodNs string, retention time.Duration, log logr.Logger,
+) error {
+	sandboxQueues := &choristerv1alpha1.ChoQueueList{}
+	if err := r.List(ctx, sandboxQueues, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoQueues: %w", err)
+	}
+	sandboxNames := make(map[string]bool, len(sandboxQueues.Items))
+	for _, q := range sandboxQueues.Items {
+		sandboxNames[q.Name] = true
+	}
+
+	prodQueues := &choristerv1alpha1.ChoQueueList{}
+	if err := r.List(ctx, prodQueues, client.InNamespace(prodNs)); err != nil {
+		return fmt.Errorf("listing production ChoQueues: %w", err)
+	}
+
+	for i := range prodQueues.Items {
+		q := &prodQueues.Items[i]
+		if sandboxNames[q.Name] || q.Status.Lifecycle == "Archived" || q.Status.Lifecycle == "Deletable" {
+			continue
+		}
+		now := metav1.Now()
+		deletableAfter := metav1.NewTime(now.Add(retention))
+		q.Status.Lifecycle = "Archived"
+		q.Status.ArchivedAt = &now
+		q.Status.DeletableAfter = &deletableAfter
+		q.Status.Ready = false
+		setCondition(&q.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "Archived",
+			Message: "Resource archived during promotion (removed from sandbox DSL)",
+		})
+		if err := r.Status().Update(ctx, q); err != nil {
+			return fmt.Errorf("archiving ChoQueue %s: %w", q.Name, err)
+		}
+		log.Info("Archived orphaned ChoQueue", "name", q.Name, "namespace", prodNs)
+	}
+	return nil
+}
+
+func (r *ChoPromotionRequestReconciler) archiveOrphanedStorages(
+	ctx context.Context, sandboxNs, prodNs string, retention time.Duration, log logr.Logger,
+) error {
+	sandboxStorages := &choristerv1alpha1.ChoStorageList{}
+	if err := r.List(ctx, sandboxStorages, client.InNamespace(sandboxNs)); err != nil {
+		return fmt.Errorf("listing sandbox ChoStorages: %w", err)
+	}
+	sandboxNames := make(map[string]bool, len(sandboxStorages.Items))
+	for _, s := range sandboxStorages.Items {
+		sandboxNames[s.Name] = true
+	}
+
+	prodStorages := &choristerv1alpha1.ChoStorageList{}
+	if err := r.List(ctx, prodStorages, client.InNamespace(prodNs)); err != nil {
+		return fmt.Errorf("listing production ChoStorages: %w", err)
+	}
+
+	for i := range prodStorages.Items {
+		s := &prodStorages.Items[i]
+		if sandboxNames[s.Name] || s.Status.Lifecycle == "Archived" || s.Status.Lifecycle == "Deletable" {
+			continue
+		}
+		now := metav1.Now()
+		deletableAfter := metav1.NewTime(now.Add(retention))
+		s.Status.Lifecycle = "Archived"
+		s.Status.ArchivedAt = &now
+		s.Status.DeletableAfter = &deletableAfter
+		s.Status.Ready = false
+		setCondition(&s.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "Archived",
+			Message: "Resource archived during promotion (removed from sandbox DSL)",
+		})
+		if err := r.Status().Update(ctx, s); err != nil {
+			return fmt.Errorf("archiving ChoStorage %s: %w", s.Name, err)
+		}
+		log.Info("Archived orphaned ChoStorage", "name", s.Name, "namespace", prodNs)
+	}
+	return nil
+}
+
+// getArchiveRetention returns the archive retention duration from the application policy.
+func (r *ChoPromotionRequestReconciler) getArchiveRetention(ctx context.Context, pr *choristerv1alpha1.ChoPromotionRequest) time.Duration {
+	defaultRetention := 30 * 24 * time.Hour
+
+	app := &choristerv1alpha1.ChoApplication{}
+	if err := r.Get(ctx, types.NamespacedName{Name: pr.Spec.Application, Namespace: pr.Namespace}, app); err != nil {
+		return defaultRetention
+	}
+
+	if app.Spec.Policy.ArchiveRetention == "" {
+		return defaultRetention
+	}
+
+	duration, err := validation.ParseRetentionDuration(app.Spec.Policy.ArchiveRetention)
+	if err != nil {
+		return defaultRetention
+	}
+	return duration
 }
 
 // SetupWithManager sets up the controller with the Manager.

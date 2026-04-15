@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -179,7 +180,59 @@ var _ = Describe("ChoSandbox Controller", func() {
 		})
 
 		It("should delete stateful resources immediately (no archive)", func() {
-			Skip("awaiting Phase 18.4: Sandbox exemption from archive lifecycle")
+			// Create a sandbox namespace with the sandbox label
+			sandboxNS := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "myapp-payments-sandbox-delete-test",
+					Labels: map[string]string{
+						"chorister.dev/sandbox": "delete-test",
+					},
+				},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: sandboxNS.Name}, sandboxNS)
+			if errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, sandboxNS)).To(Succeed())
+			}
+
+			// Create a ChoDatabase in the sandbox namespace
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sandbox-db",
+					Namespace: sandboxNS.Name,
+				},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: adds finalizer
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify finalizer was added
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
+			Expect(db.Finalizers).To(ContainElement("chorister.dev/database-archive"))
+
+			// Delete the resource
+			Expect(k8sClient.Delete(ctx, db)).To(Succeed())
+
+			// Reconcile deletion: sandbox resources should be allowed to delete immediately
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the resource is gone (finalizer removed, deletion proceeds)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "sandbox ChoDatabase should be fully deleted (no archive)")
 		})
 
 		It("should auto-destroy idle sandbox past threshold", func() {

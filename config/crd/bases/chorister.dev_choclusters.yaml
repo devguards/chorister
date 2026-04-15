@@ -52,6 +52,25 @@ spec:
                 description: controllerRevision is the current stable controller revision
                   name.
                 type: string
+              externalSecretBackend:
+                description: externalSecretBackend configures the external secret
+                  backend for production environments.
+                properties:
+                  provider:
+                    description: provider is the external secret backend provider.
+                    enum:
+                    - gcp
+                    - aws
+                    - azure
+                    type: string
+                  secretStoreRef:
+                    description: secretStoreRef is the name of the ClusterSecretStore
+                      or SecretStore to use.
+                    type: string
+                required:
+                - provider
+                - secretStoreRef
+                type: object
               finops:
                 description: finops defines cost estimation configuration.
                 properties:

@@ -608,13 +608,13 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 17: Secret management
 
-- [ ] **17.1 — Secret slot declaration and auto-generation**
+- [x] **17.1 — Secret slot declaration and auto-generation**
   - Blueprint declares typed secret slots
   - Sandbox: auto-generate secrets (random password for database, etc.)
   - Store as K8s Secrets with standard naming
   - **Test:** create ChoDatabase in sandbox → assert database credential Secret auto-generated → values are non-empty random strings
 
-- [ ] **17.2 — External secret backend integration**
+- [x] **17.2 — External secret backend integration**
   - Support external backends: GCP Secret Manager, AWS Secrets Manager (via ExternalSecrets operator or direct)
   - Production environments reference external secrets
   - **Test:** (mock) configure external secret reference → assert ExternalSecret CR created → mock backend → assert K8s Secret synced
@@ -623,24 +623,24 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 18: Stateful resource deletion safety
 
-- [ ] **18.1 — Archive lifecycle for stateful resources**
+- [x] **18.1 — Archive lifecycle for stateful resources**
   - When a stateful resource (ChoDatabase, ChoQueue, ChoStorage) is removed from the DSL and promoted, controller transitions it to `Archived` instead of deleting
   - Archived resources: data intact (read-only), connections refused, backups continue
   - Add `status.lifecycle` (Active/Archived/Deletable), `status.archivedAt`, `status.deletableAfter` fields
   - **Test:** create ChoDatabase → promote with database removed from DSL → assert database status=Archived, not deleted → assert data still accessible via backup tools → assert dependent ChoCompute gets compile error
 
-- [ ] **18.2 — Archive retention period enforcement**
+- [x] **18.2 — Archive retention period enforcement**
   - Controller enforces minimum 30-day archive period (configurable upward via `policy.archiveRetention`)
   - After retention period, controller transitions resource to `Deletable` (still not deleted)
   - **Test:** create archived database → assert it cannot be deleted before retention period → advance time (or set short retention for test) → assert status=Deletable
 
-- [ ] **18.3 — Explicit deletion of archived resources**
+- [x] **18.3 — Explicit deletion of archived resources**
   - `chorister admin resource delete --archived <resource>` finalizes deletion
   - Controller takes final backup snapshot to object storage before deletion
   - Deletion is an audited action (Loki event)
   - **Test:** archive a database → wait for Deletable → run delete command → assert final snapshot exists in object storage → assert resource fully removed → assert audit event logged
 
-- [ ] **18.4 — Sandbox exemption from archive lifecycle**
+- [x] **18.4 — Sandbox exemption from archive lifecycle**
   - Stateful resources in sandbox namespaces are deleted immediately on sandbox destruction
   - No archive lifecycle for sandboxes
   - **Test:** create sandbox with database → destroy sandbox → assert database deleted immediately (no Archived state)

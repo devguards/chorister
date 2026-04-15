@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,8 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 )
 
+const dbFinalizerName = "chorister.dev/database-archive"
+
 // ChoDatabaseReconciler reconciles a ChoDatabase object
 type ChoDatabaseReconciler struct {
 	client.Client
@@ -45,6 +48,7 @@ type ChoDatabaseReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodatabases/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile moves the cluster state to match the desired ChoDatabase spec.
 func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -57,6 +61,30 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		return ctrl.Result{}, err
 	}
+
+	// Handle deletion via finalizer
+	if !db.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, db)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(db, dbFinalizerName) {
+		controllerutil.AddFinalizer(db, dbFinalizerName)
+		if err := r.Update(ctx, db); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Handle archived/deletable lifecycle states
+	if db.Status.Lifecycle == "Archived" {
+		return r.handleArchived(ctx, db)
+	}
+	if db.Status.Lifecycle == "Deletable" {
+		// Deletable resources are idle, waiting for explicit admin deletion
+		return ctrl.Result{}, nil
+	}
+
+	// ---- Normal Active reconciliation ----
 
 	// Determine instance count based on HA setting
 	instances := int32(1)
@@ -95,6 +123,88 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("Reconciled ChoDatabase", "name", db.Name, "instances", instances)
 	return ctrl.Result{}, nil
+}
+
+// handleDeletion processes the finalizer on deletion.
+func (r *ChoDatabaseReconciler) handleDeletion(ctx context.Context, db *choristerv1alpha1.ChoDatabase) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(db, dbFinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
+	// Check if in sandbox namespace — immediate deletion
+	if r.isInSandbox(ctx, db.Namespace) {
+		log.Info("Deleting sandbox ChoDatabase immediately", "name", db.Name)
+		controllerutil.RemoveFinalizer(db, dbFinalizerName)
+		return ctrl.Result{}, r.Update(ctx, db)
+	}
+
+	// Production: record final snapshot reference (placeholder)
+	if db.Status.FinalSnapshotRef == "" {
+		db.Status.FinalSnapshotRef = fmt.Sprintf("snapshot-%s-%s", db.Name, time.Now().Format("20060102-150405"))
+		if err := r.Status().Update(ctx, db); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Recorded final snapshot for ChoDatabase", "name", db.Name, "snapshot", db.Status.FinalSnapshotRef)
+	}
+
+	controllerutil.RemoveFinalizer(db, dbFinalizerName)
+	return ctrl.Result{}, r.Update(ctx, db)
+}
+
+// handleArchived checks retention and transitions Archived → Deletable.
+func (r *ChoDatabaseReconciler) handleArchived(ctx context.Context, db *choristerv1alpha1.ChoDatabase) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	db.Status.Ready = false
+	setCondition(&db.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "Archived",
+		Message:            "ChoDatabase is archived; data preserved but not actively managed",
+		ObservedGeneration: db.Generation,
+	})
+
+	// Check if retention period has passed
+	if db.Status.DeletableAfter != nil && time.Now().After(db.Status.DeletableAfter.Time) {
+		db.Status.Lifecycle = "Deletable"
+		setCondition(&db.Status.Conditions, metav1.Condition{
+			Type:               "Deletable",
+			Status:             metav1.ConditionTrue,
+			Reason:             "RetentionExpired",
+			Message:            "Archive retention period expired; resource eligible for explicit deletion",
+			ObservedGeneration: db.Generation,
+		})
+		if err := r.Status().Update(ctx, db); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("ChoDatabase transitioned to Deletable", "name", db.Name)
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.Status().Update(ctx, db); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Requeue to check retention again
+	if db.Status.DeletableAfter != nil {
+		requeueAfter := time.Until(db.Status.DeletableAfter.Time)
+		if requeueAfter > 0 {
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	}
+	return ctrl.Result{RequeueAfter: time.Hour}, nil
+}
+
+// isInSandbox returns true if the namespace has a sandbox label.
+func (r *ChoDatabaseReconciler) isInSandbox(ctx context.Context, namespace string) bool {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+		return false
+	}
+	_, ok := ns.Labels[labelSandbox]
+	return ok
 }
 
 // ensureCredentialSecret creates the database credential secret if it doesn't exist.

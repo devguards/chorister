@@ -534,15 +534,57 @@ func TestValidateExplicitResourcesVsQuota(t *testing.T) {
 // --- Archive lifecycle ---
 
 func TestValidateArchivedResourceDependencies(t *testing.T) {
-	t.Skip("awaiting Phase 18: Stateful resource deletion safety")
+	// Archived databases and queues should be flagged
+	databases := []choristerv1alpha1.ChoDatabase{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "prod-db"},
+			Spec:       choristerv1alpha1.ChoDatabaseSpec{Application: "myapp", Domain: "payments", Engine: "postgres"},
+			Status:     choristerv1alpha1.ChoDatabaseStatus{Lifecycle: "Archived"},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "active-db"},
+			Spec:       choristerv1alpha1.ChoDatabaseSpec{Application: "myapp", Domain: "payments", Engine: "postgres"},
+			Status:     choristerv1alpha1.ChoDatabaseStatus{Lifecycle: "Active"},
+		},
+	}
+	queues := []choristerv1alpha1.ChoQueue{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "prod-queue"},
+			Spec:       choristerv1alpha1.ChoQueueSpec{Application: "myapp", Domain: "payments"},
+			Status:     choristerv1alpha1.ChoQueueStatus{Lifecycle: "Archived"},
+		},
+	}
+	storages := []choristerv1alpha1.ChoStorage{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "active-storage"},
+			Spec:       choristerv1alpha1.ChoStorageSpec{Application: "myapp", Domain: "payments", Variant: "block"},
+			Status:     choristerv1alpha1.ChoStorageStatus{Lifecycle: "Active"},
+		},
+	}
 
-	// Compute referencing archived database should produce compile error
-	// TODO: Assert compile error when referencing archived resources
+	errs := ValidateArchivedResourceDependencies(databases, queues, storages)
+	if len(errs) != 2 {
+		t.Fatalf("expected 2 errors (one archived db, one archived queue), got %d: %v", len(errs), errs)
+	}
+	if !contains(errs[0], "prod-db") {
+		t.Fatalf("expected error to mention prod-db, got: %s", errs[0])
+	}
+	if !contains(errs[1], "prod-queue") {
+		t.Fatalf("expected error to mention prod-queue, got: %s", errs[1])
+	}
+
+	// No archived resources → no errors
+	activeDbs := []choristerv1alpha1.ChoDatabase{databases[1]}
+	activeQueues := []choristerv1alpha1.ChoQueue{}
+	activeStorages := []choristerv1alpha1.ChoStorage{storages[0]}
+	errs = ValidateArchivedResourceDependencies(activeDbs, activeQueues, activeStorages)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for all-active resources, got: %v", errs)
+	}
 }
 
 func TestValidateArchiveRetentionMinimum(t *testing.T) {
-	t.Skip("awaiting Phase 18: Stateful resource deletion safety")
-
+	// Archive retention below 30 days should error
 	app := &choristerv1alpha1.ChoApplication{
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners: []string{"owner@example.com"},
@@ -558,8 +600,34 @@ func TestValidateArchiveRetentionMinimum(t *testing.T) {
 		},
 	}
 
-	_ = app
-	// TODO: Assert validation error: archive retention below 30 days
+	errs := ValidateArchiveRetentionMinimum(app)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for archive retention below 30 days, got none")
+	}
+	if !contains(errs[0], "below minimum 30 days") {
+		t.Fatalf("expected error about minimum retention, got: %v", errs)
+	}
+
+	// 30 days should pass
+	app.Spec.Policy.ArchiveRetention = "30d"
+	errs = ValidateArchiveRetentionMinimum(app)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for 30d retention, got: %v", errs)
+	}
+
+	// 1 year should pass
+	app.Spec.Policy.ArchiveRetention = "1y"
+	errs = ValidateArchiveRetentionMinimum(app)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for 1y retention, got: %v", errs)
+	}
+
+	// Empty (default) should pass
+	app.Spec.Policy.ArchiveRetention = ""
+	errs = ValidateArchiveRetentionMinimum(app)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for empty retention (30d default), got: %v", errs)
+	}
 }
 
 // --- Membership ---

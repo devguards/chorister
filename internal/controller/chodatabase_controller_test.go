@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -170,9 +171,55 @@ var _ = Describe("ChoDatabase Controller", func() {
 		})
 
 		It("should archive on deletion instead of removing (production)", func() {
-			Skip("awaiting Phase 18: Stateful resource deletion safety")
+			// Create a ChoDatabase in the default namespace (non-sandbox)
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "archive-test-db", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+			defer func() {
+				// Clean up: remove finalizer if present, then delete
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)
+				db.Finalizers = nil
+				_ = k8sClient.Update(ctx, db)
+				_ = k8sClient.Delete(ctx, db)
+			}()
 
-			// Delete ChoDatabase → status=Archived, not removed
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify finalizer was added
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
+			Expect(db.Finalizers).To(ContainElement("chorister.dev/database-archive"))
+
+			// Simulate promotion-driven archival: set lifecycle=Archived
+			now := metav1.Now()
+			deletableAfter := metav1.NewTime(now.Add(-1 * time.Hour)) // already past retention
+			db.Status.Lifecycle = "Archived"
+			db.Status.ArchivedAt = &now
+			db.Status.DeletableAfter = &deletableAfter
+			Expect(k8sClient.Status().Update(ctx, db)).To(Succeed())
+
+			// Reconcile: should transition from Archived to Deletable (past retention)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify lifecycle transitioned to Deletable
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
+			Expect(db.Status.Lifecycle).To(Equal("Deletable"))
+			Expect(db.Status.Ready).To(BeFalse())
 		})
 	})
 })

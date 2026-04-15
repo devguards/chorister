@@ -42,6 +42,20 @@ type ChoClusterSpec struct {
 	// observability defines the observability stack configuration.
 	// +optional
 	Observability *ObservabilitySpec `json:"observability,omitempty"`
+
+	// externalSecretBackend configures the external secret backend for production environments.
+	// +optional
+	ExternalSecretBackend *ExternalSecretBackendSpec `json:"externalSecretBackend,omitempty"`
+}
+
+// ExternalSecretBackendSpec configures external secret management.
+type ExternalSecretBackendSpec struct {
+	// provider is the external secret backend provider.
+	// +kubebuilder:validation:Enum=gcp;aws;azure
+	Provider string `json:"provider"`
+
+	// secretStoreRef is the name of the ClusterSecretStore or SecretStore to use.
+	SecretStoreRef string `json:"secretStoreRef"`
 }
 
 // OperatorVersions defines desired versions for managed operators.

@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -46,7 +47,8 @@ var _ = Describe("ChoStorage Controller", func() {
 			By("creating the custom resource for the Kind ChoStorage")
 			err := k8sClient.Get(ctx, typeNamespacedName, chostorage)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &choristerv1alpha1.ChoStorage{
+				storageSize := resource.MustParse("10Gi")
+				res := &choristerv1alpha1.ChoStorage{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -55,20 +57,21 @@ var _ = Describe("ChoStorage Controller", func() {
 						Application: "test-app",
 						Domain:      "payments",
 						Variant:     "block",
+						Size:        &storageSize,
 					},
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+				Expect(k8sClient.Create(ctx, res)).To(Succeed())
 			}
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &choristerv1alpha1.ChoStorage{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance ChoStorage")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			res := &choristerv1alpha1.ChoStorage{}
+			err := k8sClient.Get(ctx, typeNamespacedName, res)
+			if err == nil {
+				res.Finalizers = nil
+				_ = k8sClient.Update(ctx, res)
+				_ = k8sClient.Delete(ctx, res)
+			}
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
