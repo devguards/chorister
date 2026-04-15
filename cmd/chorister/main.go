@@ -125,9 +125,9 @@ func newSetupCmd() *cobra.Command {
 
 func newLoginCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "login",
-		Short: "Authenticate via OIDC",
-		Long:  `Initiates an OIDC device-flow authentication and stores credentials for subsequent CLI calls. The OIDC provider is configured in the ChoCluster resource.`,
+		Use:     "login",
+		Short:   "Authenticate via OIDC",
+		Long:    `Initiates an OIDC device-flow authentication and stores credentials for subsequent CLI calls. The OIDC provider is configured in the ChoCluster resource.`,
 		Example: "  chorister login",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("login: not yet implemented")
@@ -555,11 +555,11 @@ Use --rollback to revert production to its previous compiled state. Rollback and
 
 func newApproveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "approve [promotion-id]",
-		Short: "Approve a ChoPromotionRequest",
-		Long:  `Records your approval on a pending ChoPromotionRequest. When the required number of approvals is reached, the controller begins executing the promotion.`,
+		Use:     "approve [promotion-id]",
+		Short:   "Approve a ChoPromotionRequest",
+		Long:    `Records your approval on a pending ChoPromotionRequest. When the required number of approvals is reached, the controller begins executing the promotion.`,
 		Example: "  chorister approve myproduct-payments-abc123",
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("approve: id=%s (not yet implemented)\n", args[0])
 			return nil
@@ -571,11 +571,11 @@ func newApproveCmd() *cobra.Command {
 
 func newRejectCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "reject [promotion-id]",
-		Short: "Reject a ChoPromotionRequest",
-		Long:  `Permanently rejects a pending ChoPromotionRequest. The sandbox remains intact; a new promotion request must be created to try again.`,
+		Use:     "reject [promotion-id]",
+		Short:   "Reject a ChoPromotionRequest",
+		Long:    `Permanently rejects a pending ChoPromotionRequest. The sandbox remains intact; a new promotion request must be created to try again.`,
 		Example: "  chorister reject myproduct-payments-abc123",
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("reject: id=%s (not yet implemented)\n", args[0])
 			return nil
@@ -691,8 +691,8 @@ func newAdminAppCmd() *cobra.Command {
 
 func newAdminAppListCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List all applications",
+		Use:   "list",
+		Short: "List all applications",
 		Example: `  chorister admin app list
   chorister admin app list --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -717,11 +717,11 @@ func newAdminAppListCmd() *cobra.Command {
 
 func newAdminAppGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "get <name>",
-		Short:   "Show application details",
+		Use:   "get <name>",
+		Short: "Show application details",
 		Example: `  chorister admin app get myproduct
   chorister admin app get myproduct --output yaml`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := getClient(cmd)
 			if err != nil {
@@ -763,7 +763,7 @@ func newAdminAppDeleteCmd() *cobra.Command {
 		Long:  `Deletes the ChoApplication and all owned domains. Use --dry-run to preview impact. Requires --confirm to proceed. The controller handles cascade deletion via owner references.`,
 		Example: `  chorister admin app delete myproduct --dry-run
   chorister admin app delete myproduct --confirm`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := getClient(cmd)
 			if err != nil {
@@ -841,8 +841,8 @@ func newAdminDomainCmd() *cobra.Command {
 
 func newAdminDomainListCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List domains across applications",
+		Use:   "list",
+		Short: "List domains across applications",
 		Example: `  chorister admin domain list
   chorister admin domain list --app myproduct
   chorister admin domain list --output json`,
@@ -871,11 +871,11 @@ func newAdminDomainListCmd() *cobra.Command {
 
 func newAdminDomainGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "get <name>",
-		Short:   "Show domain details",
+		Use:   "get <name>",
+		Short: "Show domain details",
 		Example: `  chorister admin domain get payments --app myproduct
   chorister admin domain get payments --app myproduct --output yaml`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName, _ := cmd.Flags().GetString("app")
 			if appName == "" {
@@ -944,7 +944,7 @@ func newAdminDomainDeleteCmd() *cobra.Command {
 		Long:  `Removes the domain from ChoApplication.spec.domains. The controller handles namespace cleanup. Stateful resources enter the archive lifecycle. Use --dry-run to preview impact.`,
 		Example: `  chorister admin domain delete payments --app myproduct --dry-run
   chorister admin domain delete payments --app myproduct --confirm`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appName, _ := cmd.Flags().GetString("app")
 			if appName == "" {
@@ -1150,8 +1150,8 @@ func newAdminMemberAddCmd() *cobra.Command {
 
 func newAdminMemberListCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List domain members",
+		Use:   "list",
+		Short: "List domain members",
 		Example: `  chorister admin member list --app myproduct
   chorister admin member list --app myproduct --domain payments --role developer
   chorister admin member list --app myproduct --include-expired`,
@@ -1319,11 +1319,11 @@ func newAdminComplianceStatusCmd() *cobra.Command {
 
 func newAdminIsolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "isolate [domain]",
-		Short: "Isolate a domain (tighten NetworkPolicy, freeze promotions)",
-		Long:  `Sets the chorister.dev/isolate-<domain>=true annotation on the ChoApplication. The controller responds by tightening network policies and blocking new promotion requests for the domain. Use during incident response.`,
+		Use:     "isolate [domain]",
+		Short:   "Isolate a domain (tighten NetworkPolicy, freeze promotions)",
+		Long:    `Sets the chorister.dev/isolate-<domain>=true annotation on the ChoApplication. The controller responds by tightening network policies and blocking new promotion requests for the domain. Use during incident response.`,
 		Example: `  chorister admin isolate payments --app myproduct`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domainName := args[0]
 			app, _ := cmd.Flags().GetString("app")
@@ -1343,11 +1343,11 @@ func newAdminIsolateCmd() *cobra.Command {
 
 func newAdminUnisolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "unisolate [domain]",
-		Short: "Restore a previously isolated domain",
-		Long:  `Removes the chorister.dev/isolate-<domain> annotation, reverting network policies to their normal state and unblocking promotion requests.`,
+		Use:     "unisolate [domain]",
+		Short:   "Restore a previously isolated domain",
+		Long:    `Removes the chorister.dev/isolate-<domain> annotation, reverting network policies to their normal state and unblocking promotion requests.`,
 		Example: `  chorister admin unisolate payments --app myproduct`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domainName := args[0]
 			app, _ := cmd.Flags().GetString("app")
@@ -1575,8 +1575,8 @@ func newAdminFinOpsCmd() *cobra.Command {
 
 func newAdminFinOpsReportCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "report",
-		Short:   "Cost breakdown by domain and sandbox",
+		Use:   "report",
+		Short: "Cost breakdown by domain and sandbox",
 		Example: `  chorister admin finops report --app myproduct
   chorister admin finops report --app myproduct --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1608,8 +1608,8 @@ func newAdminFinOpsReportCmd() *cobra.Command {
 
 func newAdminFinOpsBudgetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "budget",
-		Short:   "Budget utilization per domain",
+		Use:   "budget",
+		Short: "Budget utilization per domain",
 		Example: `  chorister admin finops budget --app myproduct
   chorister admin finops budget --app myproduct --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1690,7 +1690,7 @@ Sensitivity levels (ascending): public < internal < confidential < restricted
 Compliance minimums: essential=public, standard=internal, regulated=confidential`,
 		Example: `  chorister admin domain set-sensitivity payments --app myproduct --level confidential
   chorister admin domain set-sensitivity hr --app myproduct --level restricted`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domainName := args[0]
 			appName, _ := cmd.Flags().GetString("app")
@@ -1850,8 +1850,8 @@ func newAdminClusterCmd() *cobra.Command {
 
 func newAdminClusterStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "status",
-		Short:   "Show cluster status and operator health",
+		Use:   "status",
+		Short: "Show cluster status and operator health",
 		Example: `  chorister admin cluster status
   chorister admin cluster status --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1880,8 +1880,8 @@ func newAdminClusterStatusCmd() *cobra.Command {
 
 func newAdminClusterOperatorsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "operators",
-		Short:   "List managed operators with version and health",
+		Use:   "operators",
+		Short: "List managed operators with version and health",
 		Example: `  chorister admin cluster operators
   chorister admin cluster operators --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2111,8 +2111,8 @@ func newAdminVulnerabilitiesCmd() *cobra.Command {
 
 func newAdminVulnListCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List vulnerability reports across domains",
+		Use:   "list",
+		Short: "List vulnerability reports across domains",
 		Example: `  chorister admin vulnerabilities list --app myproduct
   chorister admin vulnerabilities list --app myproduct --severity critical`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2151,11 +2151,11 @@ func newAdminVulnListCmd() *cobra.Command {
 
 func newAdminVulnGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "get <domain>",
-		Short:   "Show vulnerability report details for a domain",
+		Use:   "get <domain>",
+		Short: "Show vulnerability report details for a domain",
 		Example: `  chorister admin vulnerabilities get payments --app myproduct
   chorister admin vulnerabilities get payments --app myproduct --output json`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, _ := cmd.Flags().GetString("app")
 			if app == "" {
@@ -2324,7 +2324,7 @@ Use --app and --domain to resolve the namespace automatically, or pass --namespa
 		Example: `  chorister get database ledger --domain payments --app myproduct
   chorister get compute api --domain payments --app myproduct --output yaml
   chorister get sandbox alice --namespace myproduct-payments-sbx-alice`,
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := args[0]
 			name := args[1]
