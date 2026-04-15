@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/compiler"
 )
 
 var _ = Describe("ChoNetwork Controller", func() {
@@ -339,7 +340,37 @@ var _ = Describe("ChoNetwork Controller", func() {
 		})
 
 		It("should generate CiliumNetworkPolicy for restricted domains", func() {
-			Skip("awaiting Phase 6.3: CiliumNetworkPolicy for L7 filtering requires Cilium CRDs in envtest")
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "restricted-cnp-app"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"sec@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "regulated",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 2, AllowedRoles: []string{"sre"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "secrets",
+							Sensitivity: "restricted",
+							Supplies:    &choristerv1alpha1.SupplySpec{Port: 8443, Services: []string{"grpc"}},
+						},
+					},
+				},
+			}
+
+			policy := compiler.CompileRestrictedDomainL7Policy(app, app.Spec.Domains[0])
+			Expect(policy).NotTo(BeNil())
+			Expect(policy.GetKind()).To(Equal("CiliumNetworkPolicy"))
+			Expect(policy.GetNamespace()).To(Equal("restricted-cnp-app-secrets"))
+			Expect(policy.GetName()).To(Equal("secrets-l7-restricted"))
+
+			spec, ok := policy.Object["spec"].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(spec).To(HaveKey("endpointSelector"))
+
+			ingress, ok := spec["ingress"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(ingress).To(HaveLen(1))
 		})
 
 		It("should generate CiliumNetworkPolicy FQDN rules for egress allowlist", func() {

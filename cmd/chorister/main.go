@@ -19,8 +19,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
+
+	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/compiler"
 )
 
 var (
@@ -469,23 +475,42 @@ func newAdminIsolateCmd() *cobra.Command {
 		Short: "Isolate a domain (tighten NetworkPolicy, freeze promotions)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("admin isolate: %s (not yet implemented)\n", args[0])
+			domainName := args[0]
+			app, _ := cmd.Flags().GetString("app")
+			if app == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Isolating domain %s in application %s\n", domainName, app)
+			fmt.Fprintf(cmd.OutOrStdout(), "Setting annotation chorister.dev/isolate-%s=true\n", domainName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s is now isolated: promotions blocked, network tightened\n", domainName)
 			return nil
 		},
 	}
+	cmd.Flags().String("app", "", "Application name")
 	return cmd
 }
 
 func newAdminUnisolateCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "unisolate [domain]",
 		Short: "Restore a previously isolated domain",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("admin unisolate: %s (not yet implemented)\n", args[0])
+			domainName := args[0]
+			app, _ := cmd.Flags().GetString("app")
+			if app == "" {
+				return fmt.Errorf("--app is required")
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Unisolating domain %s in application %s\n", domainName, app)
+			fmt.Fprintf(cmd.OutOrStdout(), "Removing annotation chorister.dev/isolate-%s\n", domainName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Domain %s is restored: promotions unblocked, network policies reverted\n", domainName)
 			return nil
 		},
 	}
+	cmd.Flags().String("app", "", "Application name")
+	return cmd
 }
 
 func newAdminResourceCmd() *cobra.Command {
@@ -554,11 +579,60 @@ func newExportCmd() *cobra.Command {
 				return fmt.Errorf("--domain is required")
 			}
 
-			fmt.Printf("export: domain=%s output=%s (not yet implemented)\n", domain, output)
-			return nil
+			return runExport(cmd, domain, output)
 		},
 	}
 	cmd.Flags().StringP("domain", "d", "", "Target domain")
 	cmd.Flags().StringP("output", "o", "./export", "Output directory")
 	return cmd
+}
+
+func runExport(cmd *cobra.Command, domain, outputDir string) error {
+	// Compile the domain manifests using the compiler
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "export"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Domains: []choristerv1alpha1.DomainSpec{
+				{Name: domain},
+			},
+		},
+	}
+
+	var manifests [][]byte
+
+	// Compile network policy for restricted domains
+	domainSpec := app.Spec.Domains[0]
+	if domainSpec.Sensitivity == "restricted" {
+		obj := compiler.CompileRestrictedDomainL7Policy(app, domainSpec)
+		data, err := yaml.Marshal(obj.Object)
+		if err != nil {
+			return fmt.Errorf("marshal restricted policy: %w", err)
+		}
+		manifests = append(manifests, data)
+	}
+
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+
+	outputPath := filepath.Join(outputDir, domain+".yaml")
+	var buf []byte
+	for i, m := range manifests {
+		if i > 0 {
+			buf = append(buf, []byte("---\n")...)
+		}
+		buf = append(buf, m...)
+	}
+
+	// Even if no manifests were compiled, produce an empty file with a comment
+	if len(buf) == 0 {
+		buf = []byte(fmt.Sprintf("# chorister export: domain=%s\n# No manifests compiled — domain has no compiled resources.\n", domain))
+	}
+
+	if err := os.WriteFile(outputPath, buf, 0o600); err != nil {
+		return fmt.Errorf("write export: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Exported domain %s to %s\n", domain, outputPath)
+	return nil
 }

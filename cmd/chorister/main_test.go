@@ -18,6 +18,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -127,12 +129,23 @@ func TestCLI_PromoteCreatesCRD(t *testing.T) {
 }
 
 func TestCLI_ExportOutputsValidYAML(t *testing.T) {
-	t.Skip("awaiting Phase 15.4: export command implementation")
-
-	// export produces valid K8s manifests
-	_, err := executeCmd("export", "--domain", "payments")
+	// Export produces YAML output for a domain
+	tmpDir := t.TempDir()
+	out, err := executeCmd("export", "--domain", "payments", "--output", tmpDir)
 	if err != nil {
 		t.Fatalf("export should not error: %v", err)
+	}
+	if out == "" {
+		t.Fatal("export should produce output")
+	}
+
+	// Verify the file is created
+	data, err := os.ReadFile(filepath.Join(tmpDir, "payments.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("export output should not be empty")
 	}
 }
 

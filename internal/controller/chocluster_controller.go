@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -121,6 +123,11 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if err := r.reconcileKubeBench(ctx, cluster); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Phase 16.1: Reconcile cert-manager ClusterIssuer
+	if err := r.reconcileCertManager(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -216,6 +223,9 @@ func operatorDefs(ops *choristerv1alpha1.OperatorVersions) []operatorDef {
 	}
 	if ops.Gatekeeper != "" {
 		defs = append(defs, operatorDef{"gatekeeper", "cho-gatekeeper-system", "openpolicyagent/gatekeeper:" + ops.Gatekeeper})
+	}
+	if ops.Tetragon != "" {
+		defs = append(defs, operatorDef{"tetragon", "cho-tetragon-system", "quay.io/cilium/tetragon:" + ops.Tetragon})
 	}
 	return defs
 }
@@ -590,6 +600,32 @@ func generateDashboardJSON(appName, domainName string) string {
 	}
 	b, _ := json.MarshalIndent(dashboard, "", "  ")
 	return string(b)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16.1: cert-manager ClusterIssuer
+// ---------------------------------------------------------------------------
+
+func (r *ChoClusterReconciler) reconcileCertManager(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	// Only set up ClusterIssuer if cert-manager operator is configured
+	if cluster.Spec.Operators == nil || cluster.Spec.Operators.CertManager == "" {
+		return nil
+	}
+
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerClusterIssuerGVK)
+	issuer.SetName("chorister-cluster-issuer")
+	issuer.Object["spec"] = map[string]interface{}{
+		"selfSigned": map[string]interface{}{},
+	}
+
+	return ensureUnstructured(ctx, r.Client, issuer)
+}
+
+var certManagerClusterIssuerGVK = schema.GroupVersionKind{
+	Group:   "cert-manager.io",
+	Version: "v1",
+	Kind:    "ClusterIssuer",
 }
 
 // ---------------------------------------------------------------------------

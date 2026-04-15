@@ -28,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -420,6 +422,39 @@ var _ = Describe("ChoCluster Controller", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
 			Expect(cluster.Status.CISBenchmark).To(ContainSubstring("kube-bench"))
+		})
+	})
+
+	Context("Phase 15.2 — Tetragon operator", func() {
+		It("should include Tetragon in operator defs when version is set", func() {
+			ops := &choristerv1alpha1.OperatorVersions{Tetragon: "v1.3.0"}
+			defs := operatorDefs(ops)
+			Expect(defs).To(HaveLen(1))
+			Expect(defs[0].name).To(Equal("tetragon"))
+			Expect(defs[0].namespace).To(Equal("cho-tetragon-system"))
+		})
+	})
+
+	Context("Phase 16.1 — cert-manager ClusterIssuer", func() {
+		It("should create ClusterIssuer when cert-manager is configured", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cert-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					Operators: &choristerv1alpha1.OperatorVersions{CertManager: "v1.16.0"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: cluster.Name}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify ClusterIssuer was created
+			issuer := &unstructured.Unstructured{}
+			issuer.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "ClusterIssuer"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "chorister-cluster-issuer"}, issuer)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

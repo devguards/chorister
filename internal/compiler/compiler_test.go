@@ -482,3 +482,229 @@ func getSpec(t *testing.T, obj *unstructured.Unstructured) map[string]interface{
 	}
 	return spec
 }
+
+// ---------------------------------------------------------------------------
+// Phase 15.1 — Restricted domain L7 CiliumNetworkPolicy
+// ---------------------------------------------------------------------------
+
+func TestCompileRestrictedDomainL7Policy(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "myapp"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Domains: []choristerv1alpha1.DomainSpec{
+				{
+					Name:        "secrets",
+					Sensitivity: "restricted",
+					Supplies:    &choristerv1alpha1.SupplySpec{Port: 8443, Services: []string{"grpc"}},
+				},
+			},
+		},
+	}
+
+	policy := CompileRestrictedDomainL7Policy(app, app.Spec.Domains[0])
+	if policy == nil {
+		t.Fatal("expected non-nil policy")
+	}
+
+	if policy.GetKind() != "CiliumNetworkPolicy" {
+		t.Errorf("expected CiliumNetworkPolicy, got %s", policy.GetKind())
+	}
+	if policy.GetNamespace() != "myapp-secrets" {
+		t.Errorf("expected namespace myapp-secrets, got %s", policy.GetNamespace())
+	}
+	if policy.GetName() != "secrets-l7-restricted" {
+		t.Errorf("expected name secrets-l7-restricted, got %s", policy.GetName())
+	}
+
+	spec := getSpec(t, policy)
+	ingress, ok := spec["ingress"].([]interface{})
+	if !ok || len(ingress) != 1 {
+		t.Fatalf("expected 1 ingress rule, got %v", spec["ingress"])
+	}
+
+	rule, ok := ingress[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected ingress rule to be a map")
+	}
+	if _, ok := rule["toPorts"]; !ok {
+		t.Fatal("expected toPorts in L7 rule")
+	}
+}
+
+func TestCompileRestrictedDomainL7Policy_DefaultPort(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "myapp"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Domains: []choristerv1alpha1.DomainSpec{
+				{Name: "data", Sensitivity: "restricted"},
+			},
+		},
+	}
+
+	policy := CompileRestrictedDomainL7Policy(app, app.Spec.Domains[0])
+	if policy == nil {
+		t.Fatal("expected non-nil policy")
+	}
+	if policy.GetName() != "data-l7-restricted" {
+		t.Errorf("expected data-l7-restricted, got %s", policy.GetName())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15.2 — Tetragon TracingPolicy
+// ---------------------------------------------------------------------------
+
+func TestCompileTetragonTracingPolicy(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "secure-app"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "regulated",
+			},
+			Domains: []choristerv1alpha1.DomainSpec{
+				{Name: "vault", Sensitivity: "restricted"},
+			},
+		},
+	}
+
+	policy := CompileTetragonTracingPolicy(app, app.Spec.Domains[0])
+	if policy == nil {
+		t.Fatal("expected non-nil policy")
+	}
+
+	if policy.GetKind() != "TracingPolicy" {
+		t.Errorf("expected TracingPolicy, got %s", policy.GetKind())
+	}
+	if policy.GetNamespace() != "secure-app-vault" {
+		t.Errorf("expected namespace secure-app-vault, got %s", policy.GetNamespace())
+	}
+	if policy.GetName() != "vault-runtime-tracing" {
+		t.Errorf("expected name vault-runtime-tracing, got %s", policy.GetName())
+	}
+
+	labels := policy.GetLabels()
+	if labels["chorister.dev/component"] != "runtime-security" {
+		t.Errorf("expected runtime-security label, got %s", labels["chorister.dev/component"])
+	}
+
+	spec := getSpec(t, policy)
+	kprobes, ok := spec["kprobes"].([]interface{})
+	if !ok || len(kprobes) < 2 {
+		t.Fatalf("expected at least 2 kprobes, got %v", spec["kprobes"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16.1 — cert-manager Certificate
+// ---------------------------------------------------------------------------
+
+func TestCompileCertManagerCertificate(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "secure-app"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Domains: []choristerv1alpha1.DomainSpec{
+				{Name: "api", Sensitivity: "confidential"},
+			},
+		},
+	}
+
+	cert := CompileCertManagerCertificate(app, app.Spec.Domains[0])
+	if cert == nil {
+		t.Fatal("expected non-nil certificate")
+	}
+
+	if cert.GetKind() != "Certificate" {
+		t.Errorf("expected Certificate, got %s", cert.GetKind())
+	}
+	if cert.GetNamespace() != "secure-app-api" {
+		t.Errorf("expected namespace secure-app-api, got %s", cert.GetNamespace())
+	}
+	if cert.GetName() != "api-tls" {
+		t.Errorf("expected name api-tls, got %s", cert.GetName())
+	}
+
+	spec := getSpec(t, cert)
+	if spec["secretName"] != "api-tls-secret" {
+		t.Errorf("expected secretName api-tls-secret, got %v", spec["secretName"])
+	}
+
+	issuerRef, ok := spec["issuerRef"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected issuerRef map")
+	}
+	if issuerRef["name"] != "chorister-cluster-issuer" {
+		t.Errorf("expected issuer name chorister-cluster-issuer, got %v", issuerRef["name"])
+	}
+	if issuerRef["kind"] != "ClusterIssuer" {
+		t.Errorf("expected issuer kind ClusterIssuer, got %v", issuerRef["kind"])
+	}
+
+	dnsNames, ok := spec["dnsNames"].([]interface{})
+	if !ok || len(dnsNames) != 2 {
+		t.Fatalf("expected 2 DNS names, got %v", spec["dnsNames"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16.2 — Cilium encryption policy
+// ---------------------------------------------------------------------------
+
+func TestCompileCiliumEncryptionPolicy(t *testing.T) {
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "secure-app"},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Domains: []choristerv1alpha1.DomainSpec{
+				{
+					Name:        "api",
+					Sensitivity: "restricted",
+					Supplies:    &choristerv1alpha1.SupplySpec{Port: 8080, Services: []string{"http"}},
+				},
+			},
+		},
+	}
+
+	policy := CompileCiliumEncryptionPolicy(app, app.Spec.Domains[0])
+	if policy == nil {
+		t.Fatal("expected non-nil policy")
+	}
+
+	if policy.GetKind() != "CiliumNetworkPolicy" {
+		t.Errorf("expected CiliumNetworkPolicy, got %s", policy.GetKind())
+	}
+	if policy.GetName() != "api-encryption-policy" {
+		t.Errorf("expected api-encryption-policy, got %s", policy.GetName())
+	}
+
+	labels := policy.GetLabels()
+	if labels["chorister.dev/tls-enforced"] != "true" {
+		t.Error("expected tls-enforced label")
+	}
+
+	annotations := policy.GetAnnotations()
+	if annotations["chorister.dev/encryption"] != "wireguard" {
+		t.Error("expected wireguard encryption annotation")
+	}
+
+	spec := getSpec(t, policy)
+	ingress, ok := spec["ingress"].([]interface{})
+	if !ok || len(ingress) != 1 {
+		t.Fatalf("expected 1 ingress rule, got %v", spec["ingress"])
+	}
+
+	rule := ingress[0].(map[string]interface{})
+	auth, ok := rule["authentication"].(map[string]interface{})
+	if !ok || auth["mode"] != "required" {
+		t.Error("expected authentication mode=required in ingress")
+	}
+
+	egress, ok := spec["egress"].([]interface{})
+	if !ok || len(egress) != 1 {
+		t.Fatalf("expected 1 egress rule, got %v", spec["egress"])
+	}
+
+	egressRule := egress[0].(map[string]interface{})
+	egressAuth, ok := egressRule["authentication"].(map[string]interface{})
+	if !ok || egressAuth["mode"] != "required" {
+		t.Error("expected authentication mode=required in egress")
+	}
+}

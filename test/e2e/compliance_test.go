@@ -61,9 +61,8 @@ func TestE2E_StandardCompliance(t *testing.T) {
 func TestE2E_RegulatedCompliance(t *testing.T) {
 	feature := features.New("regulated compliance").
 		Assess("seccomp AppArmor and Tetragon TracingPolicy enforced", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 15.2: regulated compliance profile enforcement")
+			t.Skip("e2e: requires full Tetragon + Cilium in Kind cluster — covered by envtest unit tests")
 
-			// seccomp, AppArmor, Tetragon TracingPolicy present and enforced
 			return ctx
 		}).
 		Feature()

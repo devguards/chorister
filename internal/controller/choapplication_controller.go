@@ -159,6 +159,29 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 
+		// Phase 15.1: L7 CiliumNetworkPolicy for restricted domains
+		if err := r.ensureRestrictedDomainL7Policy(ctx, app, domain); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Phase 15.2: Tetragon TracingPolicy for restricted/regulated domains
+		if err := r.ensureTetragonTracingPolicy(ctx, app, domain); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Phase 16.1: cert-manager Certificate for confidential/restricted domains
+		if err := r.ensureDomainCertificate(ctx, app, domain); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Phase 16.2: Cilium encryption policy for confidential/restricted cross-domain traffic
+		if err := r.ensureCiliumEncryptionPolicy(ctx, app, domain); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Phase 15.3: Domain health monitoring
+		r.updateDomainHealthStatus(ctx, app, domain, nsName)
+
 		log.Info("Reconciled domain namespace", "namespace", nsName, "domain", domain.Name)
 	}
 
@@ -913,6 +936,110 @@ func validateNoCycles(app *choristerv1alpha1.ChoApplication) error {
 		}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15.1: Restricted domain L7 CiliumNetworkPolicy
+// ---------------------------------------------------------------------------
+
+func (r *ChoApplicationReconciler) ensureRestrictedDomainL7Policy(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) error {
+	if domain.Sensitivity != "restricted" {
+		return nil
+	}
+	policy := compiler.CompileRestrictedDomainL7Policy(app, domain)
+	return ensureUnstructured(ctx, r.Client, policy)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15.2: Tetragon TracingPolicy for runtime detection
+// ---------------------------------------------------------------------------
+
+func (r *ChoApplicationReconciler) ensureTetragonTracingPolicy(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) error {
+	isRegulated := app.Spec.Policy.Compliance == "regulated"
+	isRestricted := domain.Sensitivity == "restricted"
+	if !isRegulated && !isRestricted {
+		return nil
+	}
+	policy := compiler.CompileTetragonTracingPolicy(app, domain)
+	return ensureUnstructured(ctx, r.Client, policy)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15.3: Domain health monitoring
+// ---------------------------------------------------------------------------
+
+func (r *ChoApplicationReconciler) updateDomainHealthStatus(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec, nsName string) {
+	log := logf.FromContext(ctx)
+
+	// Check if any pods are unhealthy in the domain namespace
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(nsName)); err != nil {
+		log.Error(err, "Failed to list pods for health check", "namespace", nsName)
+		return
+	}
+
+	healthy := true
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status != corev1.ConditionTrue {
+				healthy = false
+				break
+			}
+		}
+	}
+
+	status := metav1.ConditionTrue
+	reason := "Healthy"
+	message := fmt.Sprintf("Domain %s is healthy", domain.Name)
+	if !healthy {
+		status = metav1.ConditionFalse
+		reason = "Degraded"
+		message = fmt.Sprintf("Domain %s has unhealthy pods", domain.Name)
+	}
+	setCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               fmt.Sprintf("DomainHealthy-%s", domain.Name),
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: app.Generation,
+	})
+}
+
+// IsDomainIsolated checks if the given domain has the isolation annotation.
+func IsDomainIsolated(app *choristerv1alpha1.ChoApplication, domainName string) bool {
+	if app.Annotations == nil {
+		return false
+	}
+	return app.Annotations[fmt.Sprintf("chorister.dev/isolate-%s", domainName)] == "true"
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16.1: cert-manager Certificate per domain
+// ---------------------------------------------------------------------------
+
+func (r *ChoApplicationReconciler) ensureDomainCertificate(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) error {
+	if domain.Sensitivity != "confidential" && domain.Sensitivity != "restricted" {
+		return nil
+	}
+	cert := compiler.CompileCertManagerCertificate(app, domain)
+	return ensureUnstructured(ctx, r.Client, cert)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16.2: Cilium encryption for cross-domain traffic
+// ---------------------------------------------------------------------------
+
+func (r *ChoApplicationReconciler) ensureCiliumEncryptionPolicy(ctx context.Context, app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) error {
+	if domain.Sensitivity != "confidential" && domain.Sensitivity != "restricted" {
+		return nil
+	}
+	// Only enforce if the domain has cross-domain traffic (consumes or supplies)
+	if domain.Consumes == nil && domain.Supplies == nil {
+		return nil
+	}
+	policy := compiler.CompileCiliumEncryptionPolicy(app, domain)
+	return ensureUnstructured(ctx, r.Client, policy)
 }
 
 // SetupWithManager sets up the controller with the Manager.

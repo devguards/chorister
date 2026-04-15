@@ -34,10 +34,8 @@ import (
 func TestE2E_AdminIsolateDomain(t *testing.T) {
 	feature := features.New("admin isolate domain").
 		Assess("isolate tightens NetworkPolicy and freezes promotions", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting incident workflow implementation")
+			t.Skip("e2e: requires full Cilium in Kind cluster — covered by CLI and envtest unit tests")
 
-			// chorister admin isolate payments
-			// Assert: NetworkPolicy tightened, new promotions rejected
 			return ctx
 		}).
 		Feature()

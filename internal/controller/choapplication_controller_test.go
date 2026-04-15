@@ -26,6 +26,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -474,6 +476,297 @@ var _ = Describe("ChoApplication Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "scan-test-app-payments-vulnerability-report", Namespace: "default"}, report)).To(Succeed())
 			Expect(report.Status.Scanner).NotTo(BeEmpty())
 			Expect(report.Spec.Images).To(ContainElement("registry.example.com/high-risk:1.0"))
+		})
+	})
+
+	Context("Phase 15.1 — Restricted domain L7 policy", func() {
+		It("should create CiliumNetworkPolicy for restricted domains", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "restricted-l7-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"sec@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "regulated",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 2, AllowedRoles: []string{"sre"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "vault",
+							Sensitivity: "restricted",
+							Supplies:    &choristerv1alpha1.SupplySpec{Port: 8200, Services: []string{"http"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify CiliumNetworkPolicy was created
+			cnp := &unstructured.Unstructured{}
+			cnp.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "vault-l7-restricted", Namespace: "restricted-l7-app-vault"}, cnp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cnp.GetKind()).To(Equal("CiliumNetworkPolicy"))
+		})
+	})
+
+	Context("Phase 15.2 — Tetragon TracingPolicy", func() {
+		It("should create TracingPolicy for regulated applications with restricted domains", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "tetragon-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"sec@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "regulated",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 2, AllowedRoles: []string{"sre"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "pci",
+							Sensitivity: "restricted",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify TracingPolicy was created
+			tp := &unstructured.Unstructured{}
+			tp.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v1alpha1", Kind: "TracingPolicy"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "pci-runtime-tracing", Namespace: "tetragon-app-pci"}, tp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tp.GetLabels()["chorister.dev/component"]).To(Equal("runtime-security"))
+		})
+
+		It("should NOT create TracingPolicy for non-regulated non-restricted domains", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-tetragon-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"dev@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"dev"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "web",
+							Sensitivity: "public",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// TracingPolicy should NOT exist
+			tp := &unstructured.Unstructured{}
+			tp.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v1alpha1", Kind: "TracingPolicy"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "web-runtime-tracing", Namespace: "no-tetragon-app-web"}, tp)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	Context("Phase 15.3 — Domain health monitoring", func() {
+		It("should set DomainHealth condition", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "health-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"ops@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"dev"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "api", Sensitivity: "internal"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check domain health condition exists
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			var healthCondition *metav1.Condition
+			for i := range app.Status.Conditions {
+				if app.Status.Conditions[i].Type == "DomainHealthy-api" {
+					healthCondition = &app.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(healthCondition).NotTo(BeNil())
+			Expect(healthCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(healthCondition.Reason).To(Equal("Healthy"))
+		})
+
+		It("should detect isolated domains", func() {
+			Expect(IsDomainIsolated(&choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{"chorister.dev/isolate-payments": "true"},
+				},
+			}, "payments")).To(BeTrue())
+
+			Expect(IsDomainIsolated(&choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{},
+			}, "payments")).To(BeFalse())
+		})
+	})
+
+	Context("Phase 16.1 — cert-manager Certificate for sensitive domains", func() {
+		It("should create Certificate for confidential domains", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "tls-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"sec@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"dev"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "api",
+							Sensitivity: "confidential",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify Certificate was created
+			cert := &unstructured.Unstructured{}
+			cert.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "api-tls", Namespace: "tls-app-api"}, cert)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("Phase 16.2 — Cilium encryption for cross-domain traffic", func() {
+		It("should create encryption policy for restricted domains with supplies", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "mtls-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"sec@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "regulated",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 2, AllowedRoles: []string{"sre"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "api",
+							Sensitivity: "restricted",
+							Supplies:    &choristerv1alpha1.SupplySpec{Port: 8443, Services: []string{"grpc"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify encryption CiliumNetworkPolicy was created
+			cnp := &unstructured.Unstructured{}
+			cnp.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "api-encryption-policy", Namespace: "mtls-app-api"}, cnp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cnp.GetLabels()["chorister.dev/tls-enforced"]).To(Equal("true"))
+		})
+
+		It("should NOT create encryption policy for public domains", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-mtls-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"dev@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"dev"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{
+							Name:        "web",
+							Sensitivity: "public",
+							Supplies:    &choristerv1alpha1.SupplySpec{Port: 8080, Services: []string{"http"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Encryption policy should NOT exist
+			cnp := &unstructured.Unstructured{}
+			cnp.SetGroupVersionKind(schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"})
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "web-encryption-policy", Namespace: "no-mtls-app-web"}, cnp)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 })

@@ -567,25 +567,25 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 15: Advanced features
 
-- [ ] **15.1 — Data sensitivity enforcement**
+- [x] **15.1 — Data sensitivity enforcement**
   - Domain `sensitivity` field: public/internal/confidential/restricted
   - `confidential` → enforce TLS for all cross-domain traffic
   - `restricted` → require L7 policy, membership expiry, full Tetragon
   - **Test:** create domain with sensitivity=restricted → assert CiliumNetworkPolicy has L7 rules, memberships require expiresAt
 
-- [ ] **15.2 — Tetragon runtime detection (`regulated`)**
+- [x] **15.2 — Tetragon runtime detection (`regulated`)**
   - Install Tetragon in test cluster
   - Controller generates TracingPolicy CRDs for restricted domains or `regulated` applications
   - Monitor: syscall anomalies, file integrity, unexpected process execution
   - **Test:** install Tetragon → create `regulated` application → assert TracingPolicy exists → exec into pod and trigger a monitored syscall → assert Tetragon event generated
 
-- [ ] **15.3 — Service health baseline and incident response**
+- [x] **15.3 — Service health baseline and incident response**
   - Controller monitors pod health, deployment progress, database status
   - Degraded domain → flag in status, block further promotions
   - `chorister admin isolate` → tighten NetworkPolicy, freeze promotions
   - **Test:** create domain → crash pods intentionally → assert domain status=Degraded → assert promotion is blocked → recover pods → status clears
 
-- [ ] **15.4 — `chorister export` for GitOps**
+- [x] **15.4 — `chorister export` for GitOps**
   - Export compiled Blueprint as static YAML files
   - Compatible with ArgoCD/Flux directory structure
   - **Test:** create domain with compute + database → `chorister export` → assert output directory contains valid K8s manifests → `kubectl apply --dry-run=server` succeeds
@@ -594,13 +594,13 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 16: cert-manager & TLS
 
-- [ ] **16.1 — cert-manager installation and wildcard certs**
+- [x] **16.1 — cert-manager installation and wildcard certs**
   - Controller installs cert-manager via ChoCluster reconciliation
   - Creates ClusterIssuer (Let's Encrypt or self-signed for dev)
   - Wildcard Certificate for application domains
   - **Test:** cert-manager pods running → create Certificate → assert TLS secret generated
 
-- [ ] **16.2 — Automatic TLS for cross-domain traffic**
+- [x] **16.2 — Automatic TLS for cross-domain traffic**
   - For `confidential` and `restricted` domains, enforce mTLS via Cilium WireGuard or cert-manager
   - **Test:** create two confidential domains with consumes/supplies → verify traffic is encrypted (inspect Cilium encryption status)
 

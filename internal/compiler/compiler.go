@@ -31,10 +31,12 @@ import (
 )
 
 var (
-	httpRouteGVK           = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
-	referenceGrantGVK      = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1beta1", Kind: "ReferenceGrant"}
-	ciliumNetworkPolicyGVK = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
-	ciliumEnvoyConfigGVK   = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumEnvoyConfig"}
+	httpRouteGVK              = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"}
+	referenceGrantGVK         = schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1beta1", Kind: "ReferenceGrant"}
+	ciliumNetworkPolicyGVK    = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
+	ciliumEnvoyConfigGVK      = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumEnvoyConfig"}
+	tetragonTracingPolicyGVK  = schema.GroupVersionKind{Group: "cilium.io", Version: "v1alpha1", Kind: "TracingPolicy"}
+	certManagerCertificateGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
 )
 
 type LinkArtifacts struct {
@@ -227,6 +229,224 @@ func newUnstructured(gvk schema.GroupVersionKind, namespace, name string) *unstr
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
 	return obj
+}
+
+// CompileRestrictedDomainL7Policy generates a CiliumNetworkPolicy with L7 HTTP path rules
+// for domains with sensitivity=restricted.
+func CompileRestrictedDomainL7Policy(app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) *unstructured.Unstructured {
+	nsName := fmt.Sprintf("%s-%s", app.Name, domain.Name)
+	policyName := fmt.Sprintf("%s-l7-restricted", domain.Name)
+
+	policy := newUnstructured(ciliumNetworkPolicyGVK, nsName, policyName)
+
+	// Build L7 HTTP rules from supplies + consumes
+	var httpRules []interface{}
+	if domain.Supplies != nil {
+		httpRules = append(httpRules, map[string]interface{}{
+			"method": "GET",
+			"path":   "/.*",
+		})
+	}
+
+	ingressRules := []interface{}{
+		map[string]interface{}{
+			"fromEndpoints": []interface{}{
+				map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"chorister.dev/application": app.Name,
+					},
+				},
+			},
+			"toPorts": []interface{}{
+				map[string]interface{}{
+					"ports": []interface{}{
+						map[string]interface{}{"port": fmt.Sprintf("%d", suppliesPort(domain)), "protocol": "TCP"},
+					},
+					"rules": map[string]interface{}{
+						"http": httpRules,
+					},
+				},
+			},
+		},
+	}
+
+	policy.Object["spec"] = map[string]interface{}{
+		"endpointSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"chorister.dev/application": app.Name,
+				"chorister.dev/domain":      domain.Name,
+			},
+		},
+		"ingress": ingressRules,
+	}
+
+	return policy
+}
+
+func suppliesPort(domain choristerv1alpha1.DomainSpec) int {
+	if domain.Supplies != nil {
+		return domain.Supplies.Port
+	}
+	return 8080
+}
+
+// CompileTetragonTracingPolicy generates a Tetragon TracingPolicy for monitoring
+// restricted domains or regulated applications.
+func CompileTetragonTracingPolicy(app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) *unstructured.Unstructured {
+	nsName := fmt.Sprintf("%s-%s", app.Name, domain.Name)
+	policyName := fmt.Sprintf("%s-runtime-tracing", domain.Name)
+
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(tetragonTracingPolicyGVK)
+	policy.SetNamespace(nsName)
+	policy.SetName(policyName)
+	policy.SetLabels(map[string]string{
+		"chorister.dev/application": app.Name,
+		"chorister.dev/domain":      domain.Name,
+		"chorister.dev/component":   "runtime-security",
+	})
+
+	policy.Object["spec"] = map[string]interface{}{
+		"kprobes": []interface{}{
+			map[string]interface{}{
+				"call":    "sys_execve",
+				"syscall": true,
+				"args": []interface{}{
+					map[string]interface{}{
+						"index": 0,
+						"type":  "string",
+					},
+				},
+				"selectors": []interface{}{
+					map[string]interface{}{
+						"matchNamespaces": []interface{}{
+							map[string]interface{}{
+								"namespace": nsName,
+								"operator":  "In",
+								"values":    []interface{}{nsName},
+							},
+						},
+					},
+				},
+			},
+			map[string]interface{}{
+				"call":    "sys_openat",
+				"syscall": true,
+				"args": []interface{}{
+					map[string]interface{}{
+						"index": 1,
+						"type":  "string",
+					},
+				},
+				"selectors": []interface{}{
+					map[string]interface{}{
+						"matchNamespaces": []interface{}{
+							map[string]interface{}{
+								"namespace": nsName,
+								"operator":  "In",
+								"values":    []interface{}{nsName},
+							},
+						},
+						"matchArgs": []interface{}{
+							map[string]interface{}{
+								"index":    1,
+								"operator": "Prefix",
+								"values":   []interface{}{"/etc/shadow", "/etc/passwd"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return policy
+}
+
+// CompileCertManagerCertificate generates a cert-manager Certificate for a domain.
+func CompileCertManagerCertificate(app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) *unstructured.Unstructured {
+	nsName := fmt.Sprintf("%s-%s", app.Name, domain.Name)
+	certName := fmt.Sprintf("%s-tls", domain.Name)
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certManagerCertificateGVK)
+	cert.SetNamespace(nsName)
+	cert.SetName(certName)
+	cert.SetLabels(map[string]string{
+		"chorister.dev/application": app.Name,
+		"chorister.dev/domain":      domain.Name,
+	})
+
+	cert.Object["spec"] = map[string]interface{}{
+		"secretName": fmt.Sprintf("%s-tls-secret", domain.Name),
+		"issuerRef": map[string]interface{}{
+			"name":  "chorister-cluster-issuer",
+			"kind":  "ClusterIssuer",
+			"group": "cert-manager.io",
+		},
+		"dnsNames": []interface{}{
+			fmt.Sprintf("%s-%s.chorister.internal", app.Name, domain.Name),
+			fmt.Sprintf("*.%s-%s.chorister.internal", app.Name, domain.Name),
+		},
+	}
+
+	return cert
+}
+
+// CompileCiliumEncryptionPolicy generates a CiliumNetworkPolicy that enforces
+// WireGuard encryption for cross-domain traffic on confidential/restricted domains.
+func CompileCiliumEncryptionPolicy(app *choristerv1alpha1.ChoApplication, domain choristerv1alpha1.DomainSpec) *unstructured.Unstructured {
+	nsName := fmt.Sprintf("%s-%s", app.Name, domain.Name)
+	policyName := fmt.Sprintf("%s-encryption-policy", domain.Name)
+
+	policy := newUnstructured(ciliumNetworkPolicyGVK, nsName, policyName)
+	policy.SetLabels(map[string]string{
+		"chorister.dev/application":  app.Name,
+		"chorister.dev/domain":       domain.Name,
+		"chorister.dev/tls-enforced": "true",
+	})
+	policy.SetAnnotations(map[string]string{
+		"chorister.dev/encryption": "wireguard",
+	})
+
+	policy.Object["spec"] = map[string]interface{}{
+		"endpointSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{
+				"chorister.dev/application": app.Name,
+				"chorister.dev/domain":      domain.Name,
+			},
+		},
+		"ingress": []interface{}{
+			map[string]interface{}{
+				"fromEndpoints": []interface{}{
+					map[string]interface{}{
+						"matchLabels": map[string]interface{}{
+							"chorister.dev/application": app.Name,
+						},
+					},
+				},
+				"authentication": map[string]interface{}{
+					"mode": "required",
+				},
+			},
+		},
+		"egress": []interface{}{
+			map[string]interface{}{
+				"toEndpoints": []interface{}{
+					map[string]interface{}{
+						"matchLabels": map[string]interface{}{
+							"chorister.dev/application": app.Name,
+						},
+					},
+				},
+				"authentication": map[string]interface{}{
+					"mode": "required",
+				},
+			},
+		},
+	}
+
+	return policy
 }
 
 func compileEgressRules(spec *choristerv1alpha1.NetworkEgressSpec) []interface{} {
