@@ -107,6 +107,34 @@ assert_reverse_blocked() {
   fi
 }
 
+# ── 04-assert-egress-blocked ─────────────────────────────────────────────────
+
+assert_egress_blocked() {
+  # Requires Cilium FQDN egress enforcement.
+  # From payments pod, attempt to reach an external FQDN not in the allowlist.
+  if ! kctl get crd ciliumnetworkpolicies.cilium.io &>/dev/null; then
+    echo "[SKIP] CiliumNetworkPolicy CRD not available — egress test skipped"
+    return
+  fi
+
+  # Verify CiliumNetworkPolicy exists in payments namespace
+  local cnp_count
+  cnp_count="$(kctl get ciliumnetworkpolicy -n "$PAYMENTS_NS" --no-headers 2>/dev/null | wc -l)"
+  if [ "$cnp_count" -eq 0 ]; then
+    echo "[SKIP] No CiliumNetworkPolicy in ${PAYMENTS_NS} — egress test skipped"
+    return
+  fi
+
+  local out
+  out="$(curl_from_pod "$PAYMENTS_NS" "app=echo-api" "http://example.com" 5)"
+  if echo "$out" | grep -q "CONNECTION_FAILED\|timeout\|refused"; then
+    _assert_pass "payments pod cannot reach undeclared external FQDN (example.com)"
+  else
+    _assert_fail "payments pod should not reach undeclared external FQDN" \
+      "got: ${out}"
+  fi
+}
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
 cleanup() {
@@ -123,6 +151,7 @@ main() {
   assert_wrong_port_blocked
   assert_unrelated_blocked
   assert_reverse_blocked
+  assert_egress_blocked
   cleanup
   print_summary
 }

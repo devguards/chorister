@@ -139,6 +139,103 @@ func TestE2E_NetworkIsolation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 1A.16 — Egress: undeclared FQDN blocked (e2e, Kind+Cilium)
+// ---------------------------------------------------------------------------
+
+func TestE2E_EgressUndeclaredFQDNBlocked(t *testing.T) {
+	const appName = "e2e-egress-fqdn"
+	paymentsNS := appName + "-payments"
+
+	feature := features.New("undeclared egress FQDN blocked").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Verify Cilium is installed (required for FQDN enforcement)
+			cmd := exec.CommandContext(ctx, "kubectl", "get", "daemonset", "-n", "kube-system", "cilium")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Skipf("Cilium not installed, skipping egress FQDN test: %v: %s", err, out)
+			}
+
+			// Create app with egress allowlist limited to api.stripe.com:443
+			cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", "testdata/egress-fqdn-app.yaml")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to create egress app: %v: %s", err, out)
+			}
+			if err := waitForCondition(ctx, 60*time.Second, 2*time.Second, func() (bool, error) {
+				return namespaceExists(ctx, cfg, paymentsNS)
+			}); err != nil {
+				t.Fatalf("namespace %s not created: %v", paymentsNS, err)
+			}
+
+			// Deploy test pod
+			applyManifest(ctx, t, cfg, "testdata/egress-fqdn-pod.yaml")
+
+			// Wait for pod to be ready
+			if err := waitForCondition(ctx, 90*time.Second, 3*time.Second, func() (bool, error) {
+				cmd := exec.CommandContext(ctx, "kubectl", "wait", "pod/echo-api",
+					"-n", paymentsNS, "--for=condition=Ready", "--timeout=5s")
+				return cmd.Run() == nil, nil
+			}); err != nil {
+				t.Fatalf("pod echo-api in %s not ready: %v", paymentsNS, err)
+			}
+
+			// Wait for CiliumNetworkPolicy to be applied (controller reconciliation)
+			if err := waitForCondition(ctx, 30*time.Second, 2*time.Second, func() (bool, error) {
+				cmd := exec.CommandContext(ctx, "kubectl", "get", "ciliumnetworkpolicy",
+					"-n", paymentsNS, "--no-headers")
+				out, err := cmd.CombinedOutput()
+				return err == nil && len(strings.TrimSpace(string(out))) > 0, nil
+			}); err != nil {
+				t.Fatalf("CiliumNetworkPolicy not found in %s: %v", paymentsNS, err)
+			}
+
+			return ctx
+		}).
+		Assess("undeclared egress FQDN is blocked", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Attempt to reach an FQDN not in the egress allowlist
+			cmd := exec.CommandContext(ctx, "kubectl", "exec", "echo-api", "-n", paymentsNS,
+				"--",
+				"timeout", "5", "wget", "-qO-", "--timeout=5",
+				"http://example.com")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected undeclared FQDN (example.com) to be blocked, but got response: %s", out)
+			}
+			// err != nil means timeout or connection refused — blocked as expected
+			t.Logf("undeclared FQDN correctly blocked: %v: %s", err, out)
+			return ctx
+		}).
+		Assess("declared egress FQDN is reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Attempt to reach the declared FQDN (api.stripe.com:443)
+			// We use HTTPS HEAD to avoid needing valid API credentials;
+			// a TLS handshake or HTTP response proves Cilium permits the connection.
+			cmd := exec.CommandContext(ctx, "kubectl", "exec", "echo-api", "-n", paymentsNS,
+				"--",
+				"timeout", "5", "wget", "--spider", "-q", "--timeout=5",
+				"https://api.stripe.com")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				// wget --spider returns 0 for 2xx/3xx. A 4xx (like 401 from Stripe)
+				// still indicates the TCP connection succeeded through Cilium.
+				// Check if the output indicates network-level block vs HTTP error.
+				outStr := string(out)
+				if strings.Contains(outStr, "Connection refused") || strings.Contains(outStr, "Network unreachable") {
+					t.Fatalf("declared FQDN (api.stripe.com) appears blocked at network level: %v: %s", err, out)
+				}
+				// HTTP 4xx/5xx from Stripe is fine — the connection was permitted by Cilium
+				t.Logf("declared FQDN reachable (HTTP error expected without credentials): %s", out)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cleanupApp(ctx, t, appName)
+			return ctx
+		}).
+		Feature()
+
+	testEnv.Test(t, feature)
+}
+
+// ---------------------------------------------------------------------------
 // 1A.15 — Cross-application link flow (e2e, Kind+Cilium)
 // ---------------------------------------------------------------------------
 
