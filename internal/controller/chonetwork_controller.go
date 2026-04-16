@@ -83,6 +83,7 @@ func (r *ChoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var validationErrors []string
 
 	validationErrors = append(validationErrors, validation.ValidateIngressAuth(network)...)
+	validationErrors = append(validationErrors, validation.ValidateIngressAuthNoneAllRoutes(network)...)
 	validationErrors = append(validationErrors, validation.ValidateEgressWildcard(network)...)
 
 	// Validate against application policy (allowed IdPs)

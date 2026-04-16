@@ -107,6 +107,60 @@ var _ = Describe("ChoNetwork Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("wildcard egress"))
 		})
 
+		It("Should deny internet ingress where all routes have auth=none", func() {
+			obj := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "all-routes-none"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						Auth: &choristerv1alpha1.NetworkAuthSpec{
+							JWT: &choristerv1alpha1.JWTAuthSpec{
+								Issuer:  "https://idp.example.com",
+								JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+							},
+						},
+						Routes: []choristerv1alpha1.NetworkRouteSpec{
+							{Path: "/api/*", Auth: "none"},
+							{Path: "/healthz", Auth: "none"},
+						},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("all routes override auth"))
+		})
+
+		It("Should admit internet ingress where only some routes have auth=none", func() {
+			obj := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "partial-none"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						Auth: &choristerv1alpha1.NetworkAuthSpec{
+							JWT: &choristerv1alpha1.JWTAuthSpec{
+								Issuer:  "https://idp.example.com",
+								JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+							},
+						},
+						Routes: []choristerv1alpha1.NetworkRouteSpec{
+							{Path: "/api/*"},                 // inherits default auth
+							{Path: "/healthz", Auth: "none"}, // explicit anonymous
+						},
+					},
+				},
+			}
+			warnings, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(warnings).To(BeNil())
+		})
+
 		It("Should admit specific egress destinations", func() {
 			obj := &choristerv1alpha1.ChoNetwork{
 				ObjectMeta: metav1.ObjectMeta{Name: "specific-egress"},

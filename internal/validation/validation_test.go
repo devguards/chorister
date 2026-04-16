@@ -774,3 +774,142 @@ func TestValidateRestrictedMembershipExpiryRequired_NonRestricted(t *testing.T) 
 
 // helper
 func int32Ptr(v int32) *int32 { return &v }
+
+// --- Auth=none on all routes ---
+
+func TestValidateIngressAuthNoneAllRoutes_Rejected(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "all-routes-none"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internet",
+				Port: 443,
+				Auth: &choristerv1alpha1.NetworkAuthSpec{
+					JWT: &choristerv1alpha1.JWTAuthSpec{
+						Issuer:  "https://idp.example.com",
+						JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+					},
+				},
+				Routes: []choristerv1alpha1.NetworkRouteSpec{
+					{Path: "/api/*", Auth: "none"},
+					{Path: "/healthz", Auth: "none"},
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAuthNoneAllRoutes(network)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error when all routes have auth=none, got none")
+	}
+	if !contains(errs[0], "all routes override auth") {
+		t.Fatalf("expected error about all routes auth=none, got: %v", errs)
+	}
+}
+
+func TestValidateIngressAuthNoneAllRoutes_Accepted_MixedAuth(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "mixed-auth"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internet",
+				Port: 443,
+				Auth: &choristerv1alpha1.NetworkAuthSpec{
+					JWT: &choristerv1alpha1.JWTAuthSpec{
+						Issuer:  "https://idp.example.com",
+						JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+					},
+				},
+				Routes: []choristerv1alpha1.NetworkRouteSpec{
+					{Path: "/api/*"},                 // inherits default auth
+					{Path: "/healthz", Auth: "none"}, // explicit anonymous
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAuthNoneAllRoutes(network)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors when some routes use default auth, got: %v", errs)
+	}
+}
+
+func TestValidateIngressAuthNoneAllRoutes_Accepted_NoRoutes(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-routes"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internet",
+				Port: 443,
+				Auth: &choristerv1alpha1.NetworkAuthSpec{
+					JWT: &choristerv1alpha1.JWTAuthSpec{
+						Issuer:  "https://idp.example.com",
+						JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+					},
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAuthNoneAllRoutes(network)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors when no routes are declared, got: %v", errs)
+	}
+}
+
+func TestValidateIngressAuthNoneAllRoutes_Accepted_NonInternet(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal-all-none"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internal",
+				Port: 8080,
+				Routes: []choristerv1alpha1.NetworkRouteSpec{
+					{Path: "/api/*", Auth: "none"},
+					{Path: "/healthz", Auth: "none"},
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAuthNoneAllRoutes(network)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors for non-internet ingress, got: %v", errs)
+	}
+}
+
+func TestValidateIngressAuthNoneAllRoutes_Rejected_SingleRoute(t *testing.T) {
+	network := &choristerv1alpha1.ChoNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "single-route-none"},
+		Spec: choristerv1alpha1.ChoNetworkSpec{
+			Application: "myapp",
+			Domain:      "payments",
+			Ingress: &choristerv1alpha1.NetworkIngressSpec{
+				From: "internet",
+				Port: 443,
+				Auth: &choristerv1alpha1.NetworkAuthSpec{
+					JWT: &choristerv1alpha1.JWTAuthSpec{
+						Issuer:  "https://idp.example.com",
+						JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+					},
+				},
+				Routes: []choristerv1alpha1.NetworkRouteSpec{
+					{Path: "/api/*", Auth: "none"},
+				},
+			},
+		},
+	}
+
+	errs := ValidateIngressAuthNoneAllRoutes(network)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error when single route has auth=none, got none")
+	}
+}

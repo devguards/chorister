@@ -161,6 +161,32 @@ func ValidateIngressAllowedIdP(network *choristerv1alpha1.ChoNetwork, appPolicy 
 	)}
 }
 
+// ValidateIngressAuthNoneAllRoutes checks that not all routes override auth to "none".
+// If every declared route sets auth = "none", the network effectively has no authentication,
+// which violates the guardrail in §10 of ARCHITECTURE_DECISIONS.md.
+func ValidateIngressAuthNoneAllRoutes(network *choristerv1alpha1.ChoNetwork) []string {
+	if network.Spec.Ingress == nil {
+		return nil
+	}
+	if network.Spec.Ingress.From != "internet" {
+		return nil
+	}
+	if len(network.Spec.Ingress.Routes) == 0 {
+		return nil // no per-route overrides; top-level auth governs
+	}
+
+	for _, route := range network.Spec.Ingress.Routes {
+		if route.Auth != "none" {
+			return nil // at least one route requires auth
+		}
+	}
+
+	return []string{fmt.Sprintf(
+		"ChoNetwork %q: all routes override auth to \"none\"; at least one internet-facing route must require authentication",
+		network.Name,
+	)}
+}
+
 // ValidateEgressWildcard checks that egress allowlist does not contain wildcards.
 func ValidateEgressWildcard(network *choristerv1alpha1.ChoNetwork) []string {
 	if network.Spec.Egress == nil {

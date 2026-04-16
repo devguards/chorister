@@ -84,6 +84,13 @@ func validateChoNetwork(network *choristerv1alpha1.ChoNetwork) error {
 		}
 	}
 
+	// All routes auth=none prohibition
+	if errs := validation.ValidateIngressAuthNoneAllRoutes(network); len(errs) > 0 {
+		for _, e := range errs {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "ingress", "routes"), nil, e))
+		}
+	}
+
 	// Egress wildcard prohibition
 	if errs := validation.ValidateEgressWildcard(network); len(errs) > 0 {
 		for _, e := range errs {

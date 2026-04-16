@@ -232,3 +232,68 @@ func TestE2E_IngressRequiresAuth(t *testing.T) {
 
 	testEnv.Test(t, feature)
 }
+
+func TestE2E_AuthNoneAllRoutesRejected(t *testing.T) {
+	const appName = "e2e-allnone"
+	const domain = "payments"
+
+	feature := features.New("auth=none on all routes rejected").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cmd := exec.CommandContext(ctx, "chorister", "admin", "app", "create", appName,
+				"--owners", "test@chorister.dev",
+				"--compliance", "essential",
+				"--domains", domain)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to create app: %v: %s", err, out)
+			}
+			if err := waitForCondition(ctx, 60*time.Second, 2*time.Second, func() (bool, error) {
+				return namespaceExists(ctx, cfg, appName+"-"+domain)
+			}); err != nil {
+				t.Fatalf("namespace not created: %v", err)
+			}
+			return ctx
+		}).
+		Assess("all routes auth=none is rejected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client().Resources()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "all-none-e2e",
+					Namespace: appName + "-" + domain,
+				},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: appName,
+					Domain:      domain,
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						Auth: &choristerv1alpha1.NetworkAuthSpec{
+							JWT: &choristerv1alpha1.JWTAuthSpec{
+								Issuer:  "https://idp.example.com",
+								JWKSUri: "https://idp.example.com/.well-known/jwks.json",
+							},
+						},
+						Routes: []choristerv1alpha1.NetworkRouteSpec{
+							{Path: "/api/*", Auth: "none"},
+							{Path: "/healthz", Auth: "none"},
+							{Path: "/webhooks/stripe", Auth: "none"},
+						},
+					},
+				},
+			}
+			err := client.Create(ctx, network)
+			if err == nil {
+				_ = client.Delete(ctx, network)
+				t.Fatal("expected webhook to reject ChoNetwork where all routes have auth=none")
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cleanupApp(ctx, t, appName)
+			return ctx
+		}).
+		Feature()
+
+	testEnv.Test(t, feature)
+}

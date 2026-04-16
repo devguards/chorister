@@ -610,6 +610,57 @@ var _ = Describe("ChoNetwork Controller", func() {
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Message).To(ContainSubstring("wildcard egress"))
 		})
+
+		It("should reject internet ingress where all routes have auth=none", func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "guardrail-allnone-payments"}}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ns) }()
+
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "allnone-ingress", Namespace: "guardrail-allnone-payments"},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: "guardrail-allnone",
+					Domain:      "payments",
+					Ingress: &choristerv1alpha1.NetworkIngressSpec{
+						From: "internet",
+						Port: 443,
+						Auth: &choristerv1alpha1.NetworkAuthSpec{
+							JWT: &choristerv1alpha1.JWTAuthSpec{
+								Issuer:  "https://auth.example.com",
+								JWKSUri: "https://auth.example.com/.well-known/jwks.json",
+							},
+						},
+						Routes: []choristerv1alpha1.NetworkRouteSpec{
+							{Path: "/api/*", Auth: "none"},
+							{Path: "/healthz", Auth: "none"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, network)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, network) }()
+
+			reconciler := &ChoNetworkReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: network.Name, Namespace: network.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: network.Name, Namespace: network.Namespace}, network)).To(Succeed())
+			Expect(network.Status.Ready).To(BeFalse())
+
+			var readyCondition *metav1.Condition
+			for i := range network.Status.Conditions {
+				if network.Status.Conditions[i].Type == "Ready" {
+					readyCondition = &network.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal("ValidationFailed"))
+			Expect(readyCondition.Message).To(ContainSubstring("all routes override auth"))
+		})
 	})
 
 	// -----------------------------------------------------------------------
