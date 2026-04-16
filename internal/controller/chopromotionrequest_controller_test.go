@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/scanning"
 )
 
 var _ = Describe("ChoPromotionRequest Controller", func() {
@@ -616,7 +617,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, pr) }()
 
-			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Scanner: scanning.SignatureScanner{}}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
 

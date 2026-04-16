@@ -266,6 +266,9 @@ func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, 
 		backend = "s3"
 	}
 
+	// Resolve region from ChoCluster cloud provider config
+	region := r.resolveCloudProviderRegion(ctx)
+
 	desired := &unstructured.Unstructured{}
 	desired.SetGroupVersionKind(claimGVK)
 	desired.SetName(claimName)
@@ -278,7 +281,7 @@ func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, 
 	spec := map[string]any{
 		"bucketName": bucketName,
 		"backend":    backend,
-		"region":     "us-east-1",
+		"region":     region,
 	}
 	if storage.Spec.Size != nil {
 		spec["maxSize"] = storage.Spec.Size.String()
@@ -302,6 +305,20 @@ func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, 
 	// Update existing claim spec if changed.
 	existing.Object["spec"] = spec
 	return r.Update(ctx, existing)
+}
+
+// resolveCloudProviderRegion looks up the ChoCluster to find the cloud provider region.
+func (r *ChoStorageReconciler) resolveCloudProviderRegion(ctx context.Context) string {
+	clusterList := &choristerv1alpha1.ChoClusterList{}
+	if err := r.List(ctx, clusterList); err != nil {
+		return "us-east-1"
+	}
+	for _, cluster := range clusterList.Items {
+		if cluster.Spec.CloudProvider != nil && cluster.Spec.CloudProvider.Region != "" {
+			return cluster.Spec.CloudProvider.Region
+		}
+	}
+	return "us-east-1"
 }
 
 // SetupWithManager sets up the controller with the Manager.

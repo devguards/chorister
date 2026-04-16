@@ -38,6 +38,7 @@ import (
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/audit"
+	"github.com/chorister-dev/chorister/internal/scanning"
 )
 
 var _ = Describe("ChoApplication Controller", func() {
@@ -539,7 +540,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger(), Scanner: scanning.SignatureScanner{}}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())

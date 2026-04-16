@@ -34,7 +34,7 @@ func (m *mockRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, erro
 }
 
 func TestSignatureScanner_NoVulnerabilities(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"myapp/api:v1.0.0",
 		"myapp/worker:v2.3.1",
@@ -54,8 +54,26 @@ func TestSignatureScanner_NoVulnerabilities(t *testing.T) {
 	}
 }
 
-func TestSignatureScanner_DetectsCriticalImages(t *testing.T) {
+func TestNewDefaultScanner_ReturnsTrivyScanner(t *testing.T) {
 	scanner := NewDefaultScanner()
+	ts, ok := scanner.(*TrivyScanner)
+	if !ok {
+		t.Errorf("expected NewDefaultScanner to return *TrivyScanner, got %T", scanner)
+	}
+	if ts.ServerURL != "" {
+		t.Errorf("expected empty server (local mode) for default scanner, got %q", ts.ServerURL)
+	}
+}
+
+func TestNewDefaultScanner_IsNotSignatureScanner(t *testing.T) {
+	scanner := NewDefaultScanner()
+	if _, ok := scanner.(SignatureScanner); ok {
+		t.Error("NewDefaultScanner must not return SignatureScanner (simulated)")
+	}
+}
+
+func TestSignatureScanner_DetectsCriticalImages(t *testing.T) {
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"myapp/api:v1.0.0",
 		"vulnerable-critical-image:latest",
@@ -78,7 +96,7 @@ func TestSignatureScanner_DetectsCriticalImages(t *testing.T) {
 }
 
 func TestSignatureScanner_DetectsHighImages(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"some-high-risk-image:v1",
 	})
@@ -97,7 +115,7 @@ func TestSignatureScanner_DetectsHighImages(t *testing.T) {
 }
 
 func TestSignatureScanner_DetectsCVEInImageName(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"registry.example.com/app-with-cve-fix:v1",
 	})
@@ -110,7 +128,7 @@ func TestSignatureScanner_DetectsCVEInImageName(t *testing.T) {
 }
 
 func TestSignatureScanner_MultipleMixedImages(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"clean-app:v1.0",
 		"critical-vuln-app:latest",
@@ -131,7 +149,7 @@ func TestSignatureScanner_MultipleMixedImages(t *testing.T) {
 }
 
 func TestSignatureScanner_EmptyImageList(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{})
 	if err != nil {
 		t.Fatalf("ScanImages returned error: %v", err)
@@ -145,7 +163,7 @@ func TestSignatureScanner_EmptyImageList(t *testing.T) {
 }
 
 func TestSignatureScanner_CaseInsensitive(t *testing.T) {
-	scanner := NewDefaultScanner()
+	scanner := SignatureScanner{}
 	result, err := scanner.ScanImages(context.Background(), []string{
 		"app-CRITICAL-issue:v1",
 		"HIGH-severity-lib:v2",
@@ -162,7 +180,7 @@ func TestSignatureScanner_CaseInsensitive(t *testing.T) {
 }
 
 func TestNewDefaultScanner_ImplementsInterface(t *testing.T) {
-	var _ = NewDefaultScanner()
+	var _ Scanner = NewDefaultScanner()
 }
 
 // ---------------------------------------------------------------------------

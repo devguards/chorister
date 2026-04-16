@@ -419,20 +419,56 @@ func (r *ChoClusterReconciler) reconcileObservability(ctx context.Context, clust
 		}
 	}
 
+	// Resolve retention defaults
+	retention := resolvedRetention{
+		Metrics: "30d",
+		Logs:    "14d",
+		Traces:  "7d",
+	}
+	if cluster.Spec.Observability != nil && cluster.Spec.Observability.Retention != nil {
+		ret := cluster.Spec.Observability.Retention
+		if ret.Metrics != "" {
+			retention.Metrics = ret.Metrics
+		}
+		if ret.Logs != "" {
+			retention.Logs = ret.Logs
+		}
+		if ret.Traces != "" {
+			retention.Traces = ret.Traces
+		}
+	}
+
+	// Resolve object storage bucket from cloud provider for LGTM storage backend
+	storageBucket := ""
+	if cluster.Spec.CloudProvider != nil {
+		storageBucket = fmt.Sprintf("cho-observability-%s", cluster.Name)
+	}
+
 	components := []struct {
 		name  string
 		image string
 		port  int32
+		args  []string
+		env   []corev1.EnvVar
 	}{
-		{"loki", "grafana/loki:" + versions.Loki, 3100},
-		{"mimir", "grafana/mimir:" + versions.Mimir, 9009},
-		{"tempo", "grafana/tempo:" + versions.Tempo, 3200},
-		{"alloy", "grafana/alloy:" + versions.Alloy, 12345},
-		{"grafana", "grafana/grafana:" + versions.Grafana, 3000},
+		{"loki", "grafana/loki:" + versions.Loki, 3100,
+			lokiArgs(storageBucket, retention.Logs),
+			lokiEnv(storageBucket),
+		},
+		{"mimir", "grafana/mimir:" + versions.Mimir, 9009,
+			mimirArgs(storageBucket, retention.Metrics),
+			mimirEnv(storageBucket),
+		},
+		{"tempo", "grafana/tempo:" + versions.Tempo, 3200,
+			tempoArgs(storageBucket, retention.Traces),
+			tempoEnv(storageBucket),
+		},
+		{"alloy", "grafana/alloy:" + versions.Alloy, 12345, nil, nil},
+		{"grafana", "grafana/grafana:" + versions.Grafana, 3000, nil, nil},
 	}
 
 	for _, comp := range components {
-		if err := r.ensureComponentDeployment(ctx, monNs, comp.name, comp.image, comp.port); err != nil {
+		if err := r.ensureComponentDeployment(ctx, monNs, comp.name, comp.image, comp.port, comp.args, comp.env); err != nil {
 			return err
 		}
 		if err := r.ensureComponentService(ctx, monNs, comp.name, comp.port); err != nil {
@@ -444,12 +480,92 @@ func (r *ChoClusterReconciler) reconcileObservability(ctx context.Context, clust
 	return nil
 }
 
-func (r *ChoClusterReconciler) ensureComponentDeployment(ctx context.Context, namespace, name, image string, port int32) error {
+type resolvedRetention struct {
+	Metrics, Logs, Traces string
+}
+
+func lokiArgs(bucket, logsRetention string) []string {
+	args := []string{"-config.expand-env=true"}
+	if bucket != "" {
+		args = append(args,
+			"-common.storage.backend=s3",
+			"-common.storage.s3.bucket-names="+bucket+"-logs",
+		)
+	}
+	args = append(args, "-limits.retention-period="+logsRetention)
+	return args
+}
+
+func lokiEnv(bucket string) []corev1.EnvVar {
+	if bucket == "" {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: "LOKI_S3_BUCKET", Value: bucket + "-logs"},
+	}
+}
+
+func mimirArgs(bucket, metricsRetention string) []string {
+	args := []string{"-config.expand-env=true"}
+	if bucket != "" {
+		args = append(args,
+			"-blocks-storage.backend=s3",
+			"-blocks-storage.s3.bucket-name="+bucket+"-metrics",
+		)
+	}
+	args = append(args, "-compactor.blocks-retention-period="+metricsRetention)
+	return args
+}
+
+func mimirEnv(bucket string) []corev1.EnvVar {
+	if bucket == "" {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: "MIMIR_S3_BUCKET", Value: bucket + "-metrics"},
+	}
+}
+
+func tempoArgs(bucket, tracesRetention string) []string {
+	args := []string{"-config.expand-env=true"}
+	if bucket != "" {
+		args = append(args,
+			"-storage.trace.backend=s3",
+			"-storage.trace.s3.bucket="+bucket+"-traces",
+		)
+	}
+	args = append(args, "-compactor.compaction.block-retention="+tracesRetention)
+	return args
+}
+
+func tempoEnv(bucket string) []corev1.EnvVar {
+	if bucket == "" {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: "TEMPO_S3_BUCKET", Value: bucket + "-traces"},
+	}
+}
+
+func (r *ChoClusterReconciler) ensureComponentDeployment(ctx context.Context, namespace, name, image string, port int32, args []string, env []corev1.EnvVar) error {
 	replicas := int32(1)
 
 	deploy := &appsv1.Deployment{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deploy)
 	if errors.IsNotFound(err) {
+		container := corev1.Container{
+			Name:  name,
+			Image: image,
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: port, Protocol: corev1.ProtocolTCP},
+			},
+		}
+		if len(args) > 0 {
+			container.Args = args
+		}
+		if len(env) > 0 {
+			container.Env = env
+		}
 		deploy = &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -470,15 +586,7 @@ func (r *ChoClusterReconciler) ensureComponentDeployment(ctx context.Context, na
 						Labels: map[string]string{"app": name},
 					},
 					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{
-								Name:  name,
-								Image: image,
-								Ports: []corev1.ContainerPort{
-									{ContainerPort: port, Protocol: corev1.ProtocolTCP},
-								},
-							},
-						},
+						Containers: []corev1.Container{container},
 					},
 				},
 			},

@@ -367,4 +367,63 @@ var _ = Describe("ChoStorage Controller", func() {
 			Expect(storage.Status.Ready).To(BeFalse())
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Gap 5 — Cloud provider region resolution for object storage
+	// -----------------------------------------------------------------------
+	Context("Gap 5 — Cloud provider region resolution", func() {
+		It("should fall back to us-east-1 when no ChoCluster exists", func() {
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			region := reconciler.resolveCloudProviderRegion(ctx)
+			Expect(region).To(Equal("us-east-1"))
+		})
+
+		It("should resolve region from ChoCluster cloud provider", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "region-test-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					CloudProvider: &choristerv1alpha1.CloudProviderSpec{
+						Provider: "aws",
+						Region:   "ap-southeast-1",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			region := reconciler.resolveCloudProviderRegion(ctx)
+			Expect(region).To(Equal("ap-southeast-1"))
+		})
+
+		It("should fall back to us-east-1 when ChoCluster has no cloud provider", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-cp-region-cluster"},
+				Spec:       choristerv1alpha1.ChoClusterSpec{},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			region := reconciler.resolveCloudProviderRegion(ctx)
+			Expect(region).To(Equal("us-east-1"))
+		})
+
+		It("should fall back to us-east-1 when cloud provider region is empty", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "empty-region-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					CloudProvider: &choristerv1alpha1.CloudProviderSpec{
+						Provider: "aws",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			region := reconciler.resolveCloudProviderRegion(ctx)
+			Expect(region).To(Equal("us-east-1"))
+		})
+	})
 })

@@ -171,8 +171,6 @@ func TestDiff_RenameShowsRemoveAndAdd(t *testing.T) {
 }
 
 func TestDiff_CompilationRevisionChange(t *testing.T) {
-	t.Skip("awaiting Phase 19.3: Compilation stability tracking")
-
 	sandbox := []*unstructured.Unstructured{
 		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(3),
@@ -193,6 +191,59 @@ func TestDiff_CompilationRevisionChange(t *testing.T) {
 	}
 	if result.ProductionRevision != productionRevision {
 		t.Errorf("expected production revision %s, got %s", productionRevision, result.ProductionRevision)
+	}
+}
+
+func TestDiff_CompilationRevisionSame(t *testing.T) {
+	sandbox := []*unstructured.Unstructured{
+		buildResource("api", "Deployment", "myapp-sandbox", map[string]any{"replicas": int64(1)}),
+	}
+	production := []*unstructured.Unstructured{
+		buildResource("api", "Deployment", "myapp", map[string]any{"replicas": int64(1)}),
+	}
+
+	result := CompareWithRevisions(sandbox, production, "v1.0.0", "v1.0.0")
+	if result.SandboxRevision != "v1.0.0" {
+		t.Errorf("expected sandbox revision v1.0.0, got %s", result.SandboxRevision)
+	}
+	if result.ProductionRevision != "v1.0.0" {
+		t.Errorf("expected production revision v1.0.0, got %s", result.ProductionRevision)
+	}
+}
+
+func TestDiff_FormatWithRevisionMismatch(t *testing.T) {
+	result := Result{
+		Diffs: []ResourceDiff{
+			{Kind: "Deployment", Name: "api", Action: ActionChanged, Fields: []string{"spec.replicas"}},
+		},
+		SandboxRevision:    "v2.0.0",
+		ProductionRevision: "v1.0.0",
+	}
+
+	output := Format(result)
+	if !contains(output, "compiledWithRevision differs") {
+		t.Errorf("expected revision mismatch warning, got:\n%s", output)
+	}
+	if !contains(output, "sandbox=v2.0.0") {
+		t.Errorf("expected sandbox revision in output, got:\n%s", output)
+	}
+	if !contains(output, "production=v1.0.0") {
+		t.Errorf("expected production revision in output, got:\n%s", output)
+	}
+}
+
+func TestDiff_FormatWithSameRevision(t *testing.T) {
+	result := Result{
+		Diffs: []ResourceDiff{
+			{Kind: "Deployment", Name: "api", Action: ActionAdded},
+		},
+		SandboxRevision:    "v1.0.0",
+		ProductionRevision: "v1.0.0",
+	}
+
+	output := Format(result)
+	if contains(output, "compiledWithRevision") {
+		t.Errorf("should not show revision warning when revisions match, got:\n%s", output)
 	}
 }
 

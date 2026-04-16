@@ -215,6 +215,194 @@ var _ = Describe("ChoCluster Controller", func() {
 				Expect(cm.Labels).To(HaveKeyWithValue("grafana_dashboard", "1"))
 			}
 		})
+		It("should apply default retention values in deployment args (11.4)", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "retention-defaults-cluster"},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Loki should have default logs retention (14d)
+			lokiDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "loki", Namespace: "cho-monitoring"}, lokiDeploy)).To(Succeed())
+			lokiArgs := lokiDeploy.Spec.Template.Spec.Containers[0].Args
+			Expect(lokiArgs).To(ContainElement("-limits.retention-period=14d"))
+
+			// Mimir should have default metrics retention (30d)
+			mimirDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mimir", Namespace: "cho-monitoring"}, mimirDeploy)).To(Succeed())
+			mimirArgs := mimirDeploy.Spec.Template.Spec.Containers[0].Args
+			Expect(mimirArgs).To(ContainElement("-compactor.blocks-retention-period=30d"))
+
+			// Tempo should have default traces retention (7d)
+			tempoDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tempo", Namespace: "cho-monitoring"}, tempoDeploy)).To(Succeed())
+			tempoArgs := tempoDeploy.Spec.Template.Spec.Containers[0].Args
+			Expect(tempoArgs).To(ContainElement("-compactor.compaction.block-retention=7d"))
+
+			// Alloy and Grafana should NOT have args
+			alloyDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "alloy", Namespace: "cho-monitoring"}, alloyDeploy)).To(Succeed())
+			Expect(alloyDeploy.Spec.Template.Spec.Containers[0].Args).To(BeEmpty())
+
+			grafanaDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "grafana", Namespace: "cho-monitoring"}, grafanaDeploy)).To(Succeed())
+			Expect(grafanaDeploy.Spec.Template.Spec.Containers[0].Args).To(BeEmpty())
+		})
+
+		It("should honor custom retention overrides (11.5)", func() {
+			// Clean up LGTM deployments from earlier tests so fresh ones are created
+			for _, name := range []string{"loki", "mimir", "tempo", "alloy", "grafana"} {
+				deploy := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, deploy); err == nil {
+					_ = k8sClient.Delete(ctx, deploy)
+				}
+			}
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "retention-custom-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					Observability: &choristerv1alpha1.ObservabilitySpec{
+						Retention: &choristerv1alpha1.RetentionSpec{
+							Metrics: "90d",
+							Logs:    "60d",
+							Traces:  "30d",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			lokiDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "loki", Namespace: "cho-monitoring"}, lokiDeploy)).To(Succeed())
+			Expect(lokiDeploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement("-limits.retention-period=60d"))
+
+			mimirDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mimir", Namespace: "cho-monitoring"}, mimirDeploy)).To(Succeed())
+			Expect(mimirDeploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement("-compactor.blocks-retention-period=90d"))
+
+			tempoDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tempo", Namespace: "cho-monitoring"}, tempoDeploy)).To(Succeed())
+			Expect(tempoDeploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement("-compactor.compaction.block-retention=30d"))
+		})
+
+		It("should wire S3 storage backend when cloud provider is set (11.6)", func() {
+			// Clean up LGTM deployments from earlier tests so fresh ones are created
+			for _, name := range []string{"loki", "mimir", "tempo", "alloy", "grafana"} {
+				deploy := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, deploy); err == nil {
+					_ = k8sClient.Delete(ctx, deploy)
+				}
+			}
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "s3-obs-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					CloudProvider: &choristerv1alpha1.CloudProviderSpec{
+						Provider: "aws",
+						Region:   "eu-west-1",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			expectedBucket := "cho-observability-s3-obs-cluster"
+
+			// Loki: S3 storage backend args and env
+			lokiDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "loki", Namespace: "cho-monitoring"}, lokiDeploy)).To(Succeed())
+			lokiContainer := lokiDeploy.Spec.Template.Spec.Containers[0]
+			Expect(lokiContainer.Args).To(ContainElement("-common.storage.backend=s3"))
+			Expect(lokiContainer.Args).To(ContainElement("-common.storage.s3.bucket-names=" + expectedBucket + "-logs"))
+			Expect(lokiContainer.Env).To(ContainElement(corev1.EnvVar{Name: "LOKI_S3_BUCKET", Value: expectedBucket + "-logs"}))
+
+			// Mimir: S3 storage backend args and env
+			mimirDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mimir", Namespace: "cho-monitoring"}, mimirDeploy)).To(Succeed())
+			mimirContainer := mimirDeploy.Spec.Template.Spec.Containers[0]
+			Expect(mimirContainer.Args).To(ContainElement("-blocks-storage.backend=s3"))
+			Expect(mimirContainer.Args).To(ContainElement("-blocks-storage.s3.bucket-name=" + expectedBucket + "-metrics"))
+			Expect(mimirContainer.Env).To(ContainElement(corev1.EnvVar{Name: "MIMIR_S3_BUCKET", Value: expectedBucket + "-metrics"}))
+
+			// Tempo: S3 storage backend args and env
+			tempoDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tempo", Namespace: "cho-monitoring"}, tempoDeploy)).To(Succeed())
+			tempoContainer := tempoDeploy.Spec.Template.Spec.Containers[0]
+			Expect(tempoContainer.Args).To(ContainElement("-storage.trace.backend=s3"))
+			Expect(tempoContainer.Args).To(ContainElement("-storage.trace.s3.bucket=" + expectedBucket + "-traces"))
+			Expect(tempoContainer.Env).To(ContainElement(corev1.EnvVar{Name: "TEMPO_S3_BUCKET", Value: expectedBucket + "-traces"}))
+
+			// Alloy and Grafana should NOT have S3 env
+			alloyDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "alloy", Namespace: "cho-monitoring"}, alloyDeploy)).To(Succeed())
+			Expect(alloyDeploy.Spec.Template.Spec.Containers[0].Env).To(BeEmpty())
+		})
+
+		It("should not wire S3 storage backend when cloud provider is absent (11.7)", func() {
+			// Clean up LGTM deployments from earlier tests so fresh ones are created
+			for _, name := range []string{"loki", "mimir", "tempo", "alloy", "grafana"} {
+				deploy := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, deploy); err == nil {
+					_ = k8sClient.Delete(ctx, deploy)
+				}
+			}
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-cp-obs-cluster"},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Loki should have retention arg but no S3 args
+			lokiDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "loki", Namespace: "cho-monitoring"}, lokiDeploy)).To(Succeed())
+			lokiContainer := lokiDeploy.Spec.Template.Spec.Containers[0]
+			Expect(lokiContainer.Args).To(ContainElement("-limits.retention-period=14d"))
+			Expect(lokiContainer.Args).NotTo(ContainElement(ContainSubstring("storage.backend")))
+			Expect(lokiContainer.Env).To(BeEmpty())
+		})
 	})
 
 	// -----------------------------------------------------------------------

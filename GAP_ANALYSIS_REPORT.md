@@ -1,167 +1,130 @@
 # Gap Analysis Report
 
-Date: 2026-04-15 (revised)
+Date: 2026-04-16
 
-Scope: This report compares the current repository implementation to the target architecture defined in `ARCHITECTURE_DECISIONS.md`. It is based on source inspection of CRDs, controllers, CLI code, internal packages, tests, scenario scripts, and verification of every claim against the actual code.
+Scope: This report compares the current repository implementation to the target architecture in ARCHITECTURE_DECISIONS.md. It is based on direct source inspection of the CRDs, controllers, CLI, compiler, validation, webhooks, and tests.
 
 ## Executive Summary
 
-The codebase is substantially implemented. All 12 CRDs exist, all major reconcilers are registered and functional, the CLI covers the full command surface (setup, login, apply, diff, sandbox, promote, approve, reject, admin CRUD, status, logs, events, wait, export), and resource backends integrate with their target operators (StackGres, NATS JetStream, Dragonfly, kro ObjectStorageClaim).
+The implementation is materially closer to the planned architecture than the previous report suggested. The operator shape is in place: the CRD surface exists, reconcilers are implemented, the CLI is no longer a skeleton, promotion and sandbox workflows are real, and several items previously reported as critical gaps have already been fixed.
 
-The remaining gaps are **not** in basic controller or CLI structure. They fall into three categories: (1) a critical namespace contract bug that breaks the CLI→controller chain, (2) simulated/placeholder behavior in specific subsystems (scanning, setup `--wait`, database snapshots), and (3) stale test suites that describe an earlier state of the codebase and skip all end-to-end verification.
+The remaining differences are mostly in hardening and end-to-end completeness rather than missing scaffolding. The most important gaps are:
 
-## What Matches The Architecture
+1. Promotion security scanning still defaults to a simulated scanner.
+2. Audit logging is implemented but disabled by default via the manager flag default.
+3. The observability stack is deployed, but not with the object-storage-backed configuration described in the architecture.
+4. Admission validation only exists for a subset of CRD types.
+5. Some advanced architecture promises are modeled in types but not fully enforced or verified end to end.
 
-- **Operator framework**: controller-runtime manager with 12 registered reconcilers in `cmd/main.go`.
-- **CRD set**: All 12 types under `api/v1alpha1/` match the architecture.
-- **Application/domain hierarchy**: Namespace creation, default-deny policies, ResourceQuota, LimitRange, cross-application links, consumes/supplies validation, cycle detection.
-- **Sandbox lifecycle**: Namespace creation, default-deny, cost estimation, budget enforcement, idle detection/auto-destroy.
-- **Promotion pipeline**: Full state machine (Pending→Approved→Executing→Completed/Failed/Rejected), approval counting, resource copy for all 6 types, archive orphaned stateful resources, security scan gate.
-- **Production safety**: CLI refuses `apply` to production, production namespaces get view-only RBAC.
-- **Resource backends**: ChoCompute→Deployment/Job/CronJob/HPA/PDB. ChoDatabase→StackGres SGCluster+SGInstanceProfile with Patroni HA. ChoQueue→NATS StatefulSet with PVCs and JetStream. ChoCache→Dragonfly. ChoStorage→PVC (block/file) + kro ObjectStorageClaim (object).
-- **Network guardrails**: Ingress auth validation, egress allowlist, compliance escalation, archived-resource dependency checks, retention minimums in `internal/validation/`.
-- **Compiler**: HTTPRoute, CiliumNetworkPolicy, CiliumEnvoyConfig, Tetragon TracingPolicy, cert-manager Certificate, Cilium encryption policy, kro RGD for object storage. 10 real tests with full assertions.
-- **CLI**: Full command surface — setup, login (OIDC device flow), apply (via `internal/loader`), sandbox CRUD, diff (via `internal/diff`), status, promote, approve, reject, admin (app/domain/member/scan/isolate/unisolate), export, get, wait, logs, events, docs.
-- **Audit**: LokiLogger and NoopLogger with `--audit-sink` flag (noop/loki/auto).
-- **Domain membership**: RBAC RoleBindings, expiry enforcement, role mapping, restricted-domain requires expiresAt.
+## What Matches The Planned Architecture
 
-## Critical Gaps
+- The core operator model is implemented: the controller manager registers the full reconciler set and acts as the control-plane entrypoint.
+- The API surface is broadly present: the CRD set under api/v1alpha1 matches the architecture's major resource model.
+- The CLI is a real thin client rather than a stub. It includes setup, login, apply, sandbox lifecycle, promote, approve, reject, diff, status, export, and admin flows.
+- Sandbox-first workflows are implemented. The sandbox reconciler creates isolated namespaces, default-deny policy, and cleanup logic.
+- Promotion is implemented as a real state machine. Approval counting, execution, and failure handling exist in the promotion controller.
+- Domain isolation is enforced in promotion. An isolated domain blocks execution.
+- The earlier ChoApplication namespace mismatch has been fixed. The CLI now creates the application in the control-plane namespace.
+- Webhook markers use the correct API group, chorister.dev.
+- OIDC-backed membership deprovisioning logic exists in the domain membership reconciler.
+- setup --wait performs actual deployment readiness polling.
+- The network/compiler path exists for Gateway API, Cilium policy generation, certificates, and Tetragon policy compilation.
+- End-to-end tests are no longer broadly skipped; the older report's blanket E2E-skip claim is stale.
 
-### 1. ChoApplication namespace not set — controllers cannot find it
+## Confirmed Current Gaps
 
-**Bug.** The CLI `admin app create` command creates `ChoApplication` without setting `Namespace` in ObjectMeta (`cmd/chorister/main.go` line 1524). This means the resource is created in the kubeconfig's current namespace (typically `default`).
+### 1. Promotion security scanning is still simulated by default
 
-However, `ChoSandbox` and `ChoPromotionRequest` are created in `cho-system` (the `controlPlaneNamespace`). The controllers look up the parent `ChoApplication` using `pr.Namespace` / `sandbox.Namespace` — which is `cho-system`. They will never find an app created in `default`.
+Severity: High
 
-**Affected controllers:**
-- `ChoPromotionRequestReconciler` at `chopromotionrequest_controller.go` line 98: `r.Get(ctx, types.NamespacedName{Name: pr.Spec.Application, Namespace: pr.Namespace}, app)`
-- `ChoSandboxReconciler.lookupApplication()` at `chosandbox_controller.go` line 290: uses `sandbox.Namespace`
-- `ChoDomainMembershipReconciler` at `chodomainmembership_controller.go` line 73: uses `membership.Namespace`
+The scanning package contains a real Trivy-backed scanner implementation, but the active default path still returns a signature-based simulated scanner. The promotion controller uses scanning.NewDefaultScanner() unless a scanner is injected.
 
-**Fix:** Add `Namespace: controlPlaneNamespace` to the ChoApplication ObjectMeta in `admin app create`, or make ChoApplication cluster-scoped.
+What this means:
+- Security gating exists structurally.
+- The default runtime behavior does not provide real vulnerability detection.
+- Applications relying on requireSecurityScan or higher compliance profiles do not yet get the architecture's intended protection unless the scanner wiring is changed.
 
-### 2. Webhook API group mismatch — webhooks will never intercept requests
+Evidence:
+- internal/scanning/trivy.go: NewDefaultScanner returns SignatureScanner.
+- internal/controller/chopromotionrequest_controller.go: getScanner falls back to scanning.NewDefaultScanner().
 
-**Bug.** Both validating webhooks use the wrong API group in their kubebuilder markers:
+### 2. Audit logging is opt-in, not the default runtime behavior
 
-```
-groups=chorister.chorister.dev
-```
+Severity: High
 
-The actual CRD group is `chorister.dev` (per `groupversion_info.go` line 30 and all generated CRDs in `config/crd/bases/`). The PROJECT file has `group: chorister` + `domain: chorister.dev`, which kubebuilder combines as `chorister.chorister.dev` — but the `groupversion_info.go` was manually corrected to `chorister.dev`.
+The architecture treats the intent log as a synchronous, fail-fast part of reconciliation. The manager supports this behavior, but the default flag value is still audit-sink=noop, which disables audit delivery unless explicitly configured.
 
-The generated webhook manifests will target `chorister.chorister.dev` and never match actual admission requests for `chorister.dev` resources.
+What this means:
+- The fail-fast audit path exists in the controllers.
+- A default deployment will not emit the audit trail promised by the architecture unless operators set the audit sink.
 
-**Affected files:**
-- `internal/webhook/v1alpha1/choapplication_webhook.go` line 48
-- `internal/webhook/v1alpha1/chonetwork_webhook.go` line 48
+Evidence:
+- cmd/main.go: auditSink defaults to noop.
+- internal/controller/chocluster_controller.go: reconciliation blocks when the configured audit logger fails.
 
-**Fix:** Change `groups=chorister.chorister.dev` to `groups=chorister.dev` in both webhook markers, then run `make manifests`.
+### 3. Observability deployment does not yet match the object-storage-backed architecture
 
-### 3. Simulated vulnerability scanner — scan gate provides no real security
+Severity: High
 
-The scanner in `internal/scanning/trivy.go` is a string-matching placeholder. It detects "vulnerabilities" by checking if the image name contains `"critical"`, `"cve"`, `"vuln"`, or `"high"`. It returns `SIMULATED-CRITICAL-CVE` findings.
+The ChoCluster API models observability versions and retention. The cluster reconciler deploys Loki, Mimir, Tempo, Alloy, and Grafana as plain Deployments and Services. The architecture, however, specifies LGTM backed by object storage with shared bucket-backed persistence and defined retention defaults.
 
-The promotion security scan gate (in `chopromotionrequest_controller.go` line 496) calls this scanner. For compliance profiles `standard`/`regulated` that require `requireSecurityScan: true`, the gate runs but provides zero real security value.
+What this means:
+- The stack is bootstrapped.
+- The storage backend, shared-bucket wiring, and retention behavior described in the architecture are not implemented in the reconciler.
 
-**Impact:** The architecture promises image scanning before promotion. The code path exists and is wired, but the underlying scanner is a placeholder.
+Evidence:
+- api/v1alpha1/chocluster_types.go: ObservabilitySpec and RetentionSpec exist.
+- internal/controller/chocluster_controller.go: reconcileObservability only creates Deployments and Services and does not wire storage backends or retention configuration.
 
-## High-Severity Gaps
+### 4. Admission validation only covers part of the API surface
 
-### 4. Degraded/isolated domain does not block promotion
+Severity: Medium
 
-`IsDomainIsolated()` exists as a helper in `choapplication_controller.go` (line 1010), and the CLI `admin isolate`/`admin unisolate` commands set/remove the annotation. However, the promotion controller **never checks** isolation status before executing a promotion.
+Webhook validation exists for ChoApplication, ChoNetwork, ChoDomainMembership, and ChoPromotionRequest. The rest of the CRDs rely on reconciliation-time validation and status failures rather than admission rejection.
 
-The corresponding unit test at `chopromotionrequest_controller_test.go` line 487 is `Skip("awaiting Phase 15.3")`.
+What this means:
+- The most policy-sensitive resources have webhook validation.
+- Many invalid specs still make it into the cluster and fail later than they should.
 
-**Impact:** An admin can isolate a domain during an incident, but promotions to that domain still proceed.
+Evidence:
+- internal/webhook/v1alpha1 contains four webhook implementations, not a full CRD-wide validation layer.
 
-### 5. All 14 E2E tests are skipped
+### 5. Object storage support is present but still partial at the platform-integration layer
 
-Every E2E test beyond the basic suite setup is skipped with `Skip("awaiting Phase N")` reasons:
+Severity: Medium
 
-| File | Skipped tests | Skip reasons |
-|---|---|---|
-| `test/e2e/developer_workflow_test.go` | 2 | Phase 2-8, Phase 21 |
-| `test/e2e/production_safety_test.go` | 2 | Phase 8, Phase 9 |
-| `test/e2e/compliance_test.go` | 3 | Phase 10, Phase 14, requires Tetragon |
-| `test/e2e/network_test.go` | 4 | Phase 6-7, Phase 13, Phase 13.3 |
-| `test/e2e/incident_archive_test.go` | 3 | requires Kind cluster |
+ChoStorage can reconcile object variants into kro ObjectStorageClaim resources, and ChoCluster has cloud-provider bootstrap logic. But the architecture describes an end-to-end cloud-resource path with provider-backed fulfillment. The current implementation deploys a generic provider controller image and object claim resources, but there is not yet enough source evidence of a full, verified provider bootstrap path including provider-specific configuration, credentials, and end-to-end fulfillment guarantees.
 
-The skip reasons reference ROADMAP phases that are marked `[x]` complete. The tests have never been un-skipped despite the features being implemented.
+What this means:
+- The architecture path is partially implemented.
+- The codebase shows intent and partial wiring, but not a clearly complete platform contract for object storage provisioning.
 
-**Impact:** Source code implements several guarantees with no end-to-end verification.
+Evidence:
+- internal/controller/chostorage_controller.go: object storage reconciles to ObjectStorageClaim.
+- internal/controller/chocluster_controller.go: reconcileCloudProvider deploys a provider controller image.
 
-### 6. Scenario test scripts are stale — use kubectl fallbacks for implemented commands
+### 6. Compilation-stability tracking across upgrades is still incomplete
 
-19+ operations across 8 scenario scripts use `# STUB: chorister <command> not implemented — use kubectl` comments and fall back to raw `kubectl apply`. These commands (`admin app create`, `apply`, `diff`, `admin member remove`) are now fully implemented in the CLI.
+Severity: Low
 
-**Affected scenarios:** 01-platform-bootstrap, 02-developer-sandbox, 03-sandbox-to-production, 05-ingress-jwt, 06-archive-safety, 07-full-stack, 10-domain-membership, 11-finops-budget.
+The architecture calls for visibility into compiled output changes across controller revisions. The diff package exists, but compilation-stability tracking is still flagged by a skipped test.
 
-**Impact:** Scenarios don't exercise the CLI at all; they only test the controller via direct kubectl. CLI regressions would be invisible.
+Evidence:
+- internal/diff/diff_test.go: awaiting Phase 19.3 compilation stability tracking.
 
-## Medium-Severity Gaps
+## Findings That Were Stale In The Previous Report
 
-### 7. `chorister setup --wait` is a no-op
+The prior version of this report overstated several gaps that are no longer present in the current codebase.
 
-The `--wait` flag is accepted but does not poll the Deployment status (`cmd/chorister/main.go` line 216):
+- The ChoApplication namespace bug is fixed.
+- Webhook API group mismatch is fixed.
+- Domain isolation blocking is implemented.
+- setup --wait is implemented as real deployment polling.
+- OIDC membership deprovisioning logic exists.
+- Broad claims that the CLI is mostly stubbed or that E2E coverage is entirely skipped are no longer accurate.
 
-```go
-// In a real implementation this would poll the Deployment status.
-// For now, we report success — the --wait flag is wired for future use.
-fmt.Fprintln(out, "Controller is ready")
-```
+## Bottom Line
 
-### 8. Database final snapshot is a placeholder
+The current implementation is broadly aligned with the planned architecture at the structural level. The main remaining gaps are about production-grade depth, especially around real security scanning, default-on auditing, and the richer platform integrations promised for observability and cloud-backed storage.
 
-The production database deletion handler generates a fake snapshot reference (`chodatabase_controller.go` line 182):
-
-```go
-// Production: record final snapshot reference (placeholder)
-db.Status.FinalSnapshotRef = fmt.Sprintf("snapshot-%s-%s", db.Name, ...)
-```
-
-No actual StackGres backup/snapshot is triggered.
-
-### 9. Cloud provider plugin not installed
-
-Object storage `variant: object` compiles to a `kro.run/v1alpha1/ObjectStorageClaim`, but no kro cloud provider is installed to fulfill the claim. The `ChoClusterReconciler` does not deploy or configure a kro provider (AWS/GCP/Azure).
-
-### 10. Audit defaults to no-op logger
-
-The manager defaults to `--audit-sink=noop`. The LokiLogger is fully implemented and the `--audit-sink loki` / `--audit-sink auto` flags are wired. This is by design (safe default), but means audit is not active unless explicitly configured.
-
-### 11. Webhooks only cover 2 of 12 CRD types
-
-Validating webhooks exist only for `ChoApplication` and `ChoNetwork`. The other 10 CRD types have no admission validation. The two existing webhooks also have the API group mismatch (Gap 2) making them non-functional.
-
-## Low-Severity Gaps
-
-### 12. OIDC group sync not implemented
-
-Membership test at `chodomainmembership_controller_test.go` line 309 is `Skip("awaiting OIDC sync implementation")`. Manual membership management works; automatic sync from OIDC group claims does not.
-
-### 13. Compilation stability tracking incomplete
-
-Diff test at `internal/diff/diff_test.go` line 174 is `Skip("awaiting Phase 19.3: Compilation stability tracking")`. The diff package works for resource comparison but doesn't track compilation revision stability.
-
-### 14. ROADMAP checkboxes are misleading
-
-All 21 phases show `[x]`. The ROADMAP header explains this means "scaffolded — types, reconciler stubs, and basic happy-path logic are in place." However, features like degraded-domain blocking (Phase 15.3) and real scanning (Phase 14) are clearly not production-complete despite being checked off.
-
-## Corrections From Previous Report
-
-The following items were listed as gaps in the original report but are **now implemented**:
-
-| Original claim | Current status |
-|---|---|
-| "`chorister apply` is unimplemented" | **Implemented.** Uses `internal/loader` to parse multi-doc YAML. |
-| "No DSL ingestion path" | **Resolved.** Architecture decision: users author chorister CRD YAML; `apply` loads and creates them. |
-| "`setup`, `login`, `diff`, `admin app create`, `admin domain create`, `admin member remove` are not implemented" | **All implemented.** Full implementations with flags, validation, and output formatting. |
-| "`setup` only supports dry-run" | **Implemented.** Creates namespace, installs CRDs, deploys controller, creates ChoCluster. |
-| "`diff` returns not yet implemented" | **Implemented.** Wired to `internal/diff.Compare()` with table/JSON/YAML output. |
-| "ChoDatabase does not create StackGres resources" | **Implemented.** Creates SGCluster + SGInstanceProfile via unstructured client. |
-| "ChoQueue uses EmptyDir, no JetStream" | **Implemented.** Uses PVC VolumeClaimTemplates + JetStream config with `-js -sd /data`. |
-| "ChoStorage no object variant" | **Implemented.** Creates `kro.run/v1alpha1/ObjectStorageClaim` for object variant. |
-| "Compiler tests are mostly TODOs" | **Resolved.** 10 real test functions with full assertions; stale placeholder tests removed. |
-| "kro integration missing" | **Implemented.** Compiler generates kro RGD for object storage; ChoStorage creates ObjectStorageClaim. |
+If the question is whether the codebase still differs from the planned architecture, the answer is yes, but the differences are narrower and more operational than foundational. The platform shape is there. The remaining work is mostly about making the existing paths trustworthy enough to match the architecture's stronger guarantees.

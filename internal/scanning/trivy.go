@@ -41,7 +41,7 @@ type ScanResult struct {
 type SignatureScanner struct{}
 
 func NewDefaultScanner() Scanner {
-	return SignatureScanner{}
+	return NewTrivyScanner("")
 }
 
 func (SignatureScanner) ScanImages(_ context.Context, images []string) (ScanResult, error) {
