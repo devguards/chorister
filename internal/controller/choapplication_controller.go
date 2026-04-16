@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/compiler"
 	"github.com/chorister-dev/chorister/internal/scanning"
 	"github.com/chorister-dev/chorister/internal/validation"
@@ -52,8 +54,9 @@ const (
 // ChoApplicationReconciler reconciles a ChoApplication object
 type ChoApplicationReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Scanner scanning.Scanner
+	Scheme      *runtime.Scheme
+	Scanner     scanning.Scanner
+	AuditLogger audit.Logger
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch;create;update;patch;delete
@@ -81,6 +84,28 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Audit: log the reconciliation start (fail-fast if audit sink fails)
+	if r.AuditLogger != nil {
+		if err := r.AuditLogger.Log(ctx, audit.Event{
+			Timestamp:   time.Now(),
+			Action:      "Reconcile",
+			Resource:    "ChoApplication/" + app.Name,
+			Namespace:   app.Namespace,
+			Application: app.Name,
+			Result:      "started",
+		}); err != nil {
+			log.Error(err, "Audit write failed, blocking reconciliation")
+			setCondition(&app.Status.Conditions, metav1.Condition{
+				Type:    "AuditReady",
+				Status:  metav1.ConditionFalse,
+				Reason:  "AuditWriteFailed",
+				Message: fmt.Sprintf("Audit sink write failed: %v", err),
+			})
+			_ = r.Status().Update(ctx, app)
+			return ctrl.Result{}, fmt.Errorf("audit write failed, blocking reconciliation: %w", err)
+		}
 	}
 
 	// Handle deletion via finalizer

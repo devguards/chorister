@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/audit"
 )
 
 var _ = Describe("ChoApplication Controller", func() {
@@ -89,8 +91,9 @@ var _ = Describe("ChoApplication Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &ChoApplicationReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -99,6 +102,94 @@ var _ = Describe("ChoApplication Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// 12.1 — Audit fail-fast for ChoApplication (envtest)
+	// -----------------------------------------------------------------------
+
+	Context("12.1 — Audit fail-fast", func() {
+		It("should block reconciliation on audit write failure", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-fail-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewFailingLogger(fmt.Errorf("loki unavailable")),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("audit write failed"))
+
+			// Verify AuditReady condition is set to False
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			var auditCondition *metav1.Condition
+			for i, c := range app.Status.Conditions {
+				if c.Type == "AuditReady" {
+					auditCondition = &app.Status.Conditions[i]
+				}
+			}
+			Expect(auditCondition).NotTo(BeNil())
+			Expect(auditCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(auditCondition.Reason).To(Equal("AuditWriteFailed"))
+		})
+
+		It("should block reconciliation on audit write failure with connection refused", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-block-app",
+					Namespace: "default",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewFailingLogger(fmt.Errorf("loki connection refused")),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("audit write failed"))
 		})
 	})
 
@@ -134,7 +225,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -182,7 +273,7 @@ var _ = Describe("ChoApplication Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			// First reconcile adds finalizer
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
@@ -240,7 +331,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			// Two reconciles: add finalizer + create resources
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
@@ -296,7 +387,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -353,7 +444,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -403,7 +494,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -448,7 +539,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -506,7 +597,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -546,7 +637,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -584,7 +675,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -620,7 +711,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -678,7 +769,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -718,7 +809,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -757,7 +848,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -775,7 +866,7 @@ var _ = Describe("ChoApplication Controller", func() {
 	// -----------------------------------------------------------------------
 	Context("Not-found handling", func() {
 		It("should return nil when ChoApplication does not exist", func() {
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: "nonexistent-app", Namespace: "default"},
 			})
@@ -813,7 +904,7 @@ var _ = Describe("ChoApplication Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})

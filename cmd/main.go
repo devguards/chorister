@@ -220,8 +220,9 @@ func main() {
 	}
 
 	if err := (&controller.ChoApplicationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		AuditLogger: auditLogger,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoApplication")
 		os.Exit(1)
