@@ -220,7 +220,7 @@ for raw_target in "${TARGETS[@]}"; do
   printf '\n==> Processing %s: %s\n' "$scope_label" "$target_rel"
 
   scoped_prompt=$(cat <<EOF
-You are editing exactly one scope in this repository.
+You are editing this repository scope.
 
 Scope type: $scope_label
 Scope path: $target_rel
@@ -228,11 +228,12 @@ Scope path: $target_rel
 Task:
 $PROMPT
 
-Rules:
-- Only modify files inside $target_rel.
-- Keep changes minimal and focused on the task.
-- Update tests in this scope if needed.
-- Do not run tests; the wrapper script will run them after you finish.
+Guidelines:
+- Make whatever changes you see fit to accomplish the task within this scope.
+- Look for instruction files inside $target_rel (e.g., AGENTS.md, .instructions.md, README.md, COPILOT.md) and follow any guidance they contain.
+- You may create, modify, or delete any files within this scope as needed.
+- Run the tests using the hint command below and evaluate the results. If the results contradict the expected behavior, iterate — adjusting code or tests — until they pass and make sense.
+- Suggested test command (hint only, adjust as needed): $TEST_CMD
 EOF
 )
 
@@ -264,7 +265,7 @@ EOF
 
   assert_changes_within_target "$target_rel" "$changed_file_list" || fail "Copilot changed files outside target scope: $target_rel"
 
-  printf 'Running tests: %s\n' "$TEST_CMD"
+  printf 'Running final verification: %s\n' "$TEST_CMD"
   eval "$TEST_CMD"
 
   collect_changed_files "$changed_file_list"
