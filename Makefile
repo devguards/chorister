@@ -112,6 +112,9 @@ test-scenarios: build ## Run all scenario tests (sequential, single cluster)
 test-scenario: build ## Run a single scenario: make test-scenario SCENARIO=01
 	bash test/scenarios/run-all.sh --cluster-name $(SCENARIO_CLUSTER) --scenario $(SCENARIO)
 
+.PHONY: test-all
+test-all: test test-e2e-lite test-scenarios ## Run unit, e2e (plain Kind), and scenario tests.
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
