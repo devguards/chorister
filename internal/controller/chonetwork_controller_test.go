@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/compiler"
 )
 
@@ -122,7 +123,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			// Two reconciles: add finalizer + create resources
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
@@ -172,7 +173,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -217,7 +218,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -269,7 +270,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -321,7 +322,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, app)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
 			})
@@ -462,7 +463,7 @@ var _ = Describe("ChoNetwork Controller", func() {
 				_ = k8sClient.Delete(ctx, source)
 			}()
 
-			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
 			for _, app := range []*choristerv1alpha1.ChoApplication{target, source} {
 				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})

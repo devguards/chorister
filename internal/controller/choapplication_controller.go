@@ -87,25 +87,27 @@ func (r *ChoApplicationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Audit: log the reconciliation start (fail-fast if audit sink fails)
-	if r.AuditLogger != nil {
-		if err := r.AuditLogger.Log(ctx, audit.Event{
-			Timestamp:   time.Now(),
-			Action:      "Reconcile",
-			Resource:    "ChoApplication/" + app.Name,
-			Namespace:   app.Namespace,
-			Application: app.Name,
-			Result:      "started",
-		}); err != nil {
-			log.Error(err, "Audit write failed, blocking reconciliation")
-			setCondition(&app.Status.Conditions, metav1.Condition{
-				Type:    "AuditReady",
-				Status:  metav1.ConditionFalse,
-				Reason:  "AuditWriteFailed",
-				Message: fmt.Sprintf("Audit sink write failed: %v", err),
-			})
-			_ = r.Status().Update(ctx, app)
-			return ctrl.Result{}, fmt.Errorf("audit write failed, blocking reconciliation: %w", err)
-		}
+	if r.AuditLogger == nil {
+		log.Error(nil, "AuditLogger not configured, blocking reconciliation")
+		return ctrl.Result{}, fmt.Errorf("audit write failed, blocking reconciliation: AuditLogger not configured")
+	}
+	if err := r.AuditLogger.Log(ctx, audit.Event{
+		Timestamp:   time.Now(),
+		Action:      "Reconcile",
+		Resource:    "ChoApplication/" + app.Name,
+		Namespace:   app.Namespace,
+		Application: app.Name,
+		Result:      "started",
+	}); err != nil {
+		log.Error(err, "Audit write failed, blocking reconciliation")
+		setCondition(&app.Status.Conditions, metav1.Condition{
+			Type:    "AuditReady",
+			Status:  metav1.ConditionFalse,
+			Reason:  "AuditWriteFailed",
+			Message: fmt.Sprintf("Audit sink write failed: %v", err),
+		})
+		_ = r.Status().Update(ctx, app)
+		return ctrl.Result{}, fmt.Errorf("audit write failed, blocking reconciliation: %w", err)
 	}
 
 	// Handle deletion via finalizer
