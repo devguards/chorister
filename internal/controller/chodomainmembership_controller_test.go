@@ -306,7 +306,88 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 		})
 
 		It("should deprovision bindings when OIDC group removes subject", func() {
-			Skip("awaiting OIDC sync implementation")
+			cleanup := setupAppAndNamespace("rbac-oidc-app", "sync", "internal")
+			defer cleanup()
+
+			// Create a membership sourced from an OIDC group
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "oidc-membership", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "rbac-oidc-app",
+					Domain:      "sync",
+					Identity:    "alice@example.com",
+					Role:        "developer",
+					Source:      "oidc-group",
+					OIDCGroup:   "team-payments",
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			// Phase 1: identity IS in the OIDC group → RoleBindings should be created
+			mockChecker := &mockOIDCGroupChecker{members: map[string]map[string]bool{
+				"team-payments": {"alice@example.com": true},
+			}}
+			reconciler.OIDCGroupChecker = mockChecker
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(5*time.Minute), "OIDC memberships should requeue for periodic sync")
+
+			// Verify RoleBindings were created
+			rbList := &rbacv1.RoleBindingList{}
+			Expect(k8sClient.List(ctx, rbList, client.MatchingLabels{labelMembership: membership.Name})).To(Succeed())
+			Expect(rbList.Items).NotTo(BeEmpty())
+
+			// Verify status is Active
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
+			Expect(membership.Status.Phase).To(Equal("Active"))
+
+			// Phase 2: identity REMOVED from the OIDC group → RoleBindings should be deleted
+			mockChecker.members["team-payments"]["alice@example.com"] = false
+
+			result, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(5*time.Minute), "Deprovisioned OIDC memberships should still requeue")
+
+			// Verify RoleBindings were deleted
+			rbList = &rbacv1.RoleBindingList{}
+			Expect(k8sClient.List(ctx, rbList, client.MatchingLabels{labelMembership: membership.Name})).To(Succeed())
+			Expect(rbList.Items).To(BeEmpty())
+
+			// Verify status is Deprovisioned with correct condition
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
+			Expect(membership.Status.Phase).To(Equal("Deprovisioned"))
+
+			var found bool
+			for _, c := range membership.Status.Conditions {
+				if c.Type == "Ready" && c.Reason == "OIDCGroupRemoved" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected OIDCGroupRemoved condition")
+
+			// Phase 3: identity RE-ADDED to the OIDC group → RoleBindings should be re-created
+			mockChecker.members["team-payments"]["alice@example.com"] = true
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify RoleBindings were re-created
+			rbList = &rbacv1.RoleBindingList{}
+			Expect(k8sClient.List(ctx, rbList, client.MatchingLabels{labelMembership: membership.Name})).To(Succeed())
+			Expect(rbList.Items).NotTo(BeEmpty())
+
+			// Verify status is Active again
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace}, membership)).To(Succeed())
+			Expect(membership.Status.Phase).To(Equal("Active"))
 		})
 
 		It("should create admin RoleBinding for org-admin", func() {
@@ -346,3 +427,15 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 		})
 	})
 })
+
+// mockOIDCGroupChecker is a test double for OIDCGroupChecker.
+type mockOIDCGroupChecker struct {
+	members map[string]map[string]bool // group → identity → isMember
+}
+
+func (m *mockOIDCGroupChecker) IsMember(_ context.Context, group, identity string) (bool, error) {
+	if identities, ok := m.members[group]; ok {
+		return identities[identity], nil
+	}
+	return false, nil
+}

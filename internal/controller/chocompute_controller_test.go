@@ -336,6 +336,75 @@ var _ = Describe("ChoCompute Controller", func() {
 			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:2.0"))
 		})
 
+		It("should create Deployment with GPU limits for gpu variant", func() {
+			replicas := int32(1)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "gpu-worker", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "ml-pipeline",
+					Domain:      "training",
+					Image:       "nvidia/cuda:12.0-base",
+					Variant:     "gpu",
+					Replicas:    &replicas,
+					GPU:         &choristerv1alpha1.GPUSpec{Type: "nvidia.com/gpu", Count: 2},
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Assert Deployment created
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gpu-worker", Namespace: "default"}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Spec.Containers[0].Image).To(Equal("nvidia/cuda:12.0-base"))
+
+			// Assert GPU resource limit
+			gpuLimit := deploy.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceName("nvidia.com/gpu")]
+			Expect(gpuLimit.Value()).To(Equal(int64(2)))
+
+			// Assert no Job was created (GPU variant uses Deployment, not Job)
+			job := &batchv1.Job{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "gpu-worker", Namespace: "default"}, job)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should default GPU type to nvidia.com/gpu when type is omitted", func() {
+			replicas := int32(1)
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "gpu-default-type", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "ml-pipeline",
+					Domain:      "inference",
+					Image:       "nvidia/cuda:12.0-base",
+					Variant:     "gpu",
+					Replicas:    &replicas,
+					GPU:         &choristerv1alpha1.GPUSpec{Count: 1},
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			reconciler := &ChoComputeReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: compute.Name, Namespace: compute.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gpu-default-type", Namespace: "default"}, deploy)).To(Succeed())
+
+			// Assert nvidia.com/gpu is used as the default resource name
+			limits := deploy.Spec.Template.Spec.Containers[0].Resources.Limits
+			gpuLimit, exists := limits[corev1.ResourceName("nvidia.com/gpu")]
+			Expect(exists).To(BeTrue(), "nvidia.com/gpu limit should be present")
+			Expect(gpuLimit.Value()).To(Equal(int64(1)))
+		})
+
 		It("should clean up Deployment and Service on deletion", func() {
 			replicas := int32(1)
 			port := int32(8080)

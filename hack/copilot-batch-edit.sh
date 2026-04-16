@@ -11,6 +11,7 @@ Usage:
 Options:
   -p, --prompt TEXT          Prompt applied to each target iteration
   -t, --test-cmd CMD         Test command to run after each edit (default: make test)
+  --fix-attempts N       Retry Copilot after failed verification up to N times (default: 100)
   -m, --model MODEL          Copilot model name, for example gpt-5.3-codex
       --agent NAME           Optional custom Copilot agent name
       --auto-approve         Run Copilot with --allow-all
@@ -96,6 +97,7 @@ to_repo_rel() {
 
 PROMPT=""
 TEST_CMD="make test"
+FIX_ATTEMPTS=100
 MODEL=""
 AGENT=""
 AUTO_APPROVE=0
@@ -105,6 +107,161 @@ SUCCEEDED_TARGETS=()
 NO_CHANGE_TARGETS=()
 FAILED_TARGETS=()
 STASHED_TARGETS=()
+CURRENT_CHILD_PID=""
+CURRENT_CHILD_LABEL=""
+INTERRUPTED=0
+REPO_BIN=""
+LAST_VERIFICATION_OUTPUT=""
+
+forward_signal() {
+  local signal="$1"
+
+  INTERRUPTED=1
+
+  if [[ -n "$CURRENT_CHILD_PID" ]]; then
+    printf '\nForwarding SIG%s to %s (pid %s)\n' "$signal" "$CURRENT_CHILD_LABEL" "$CURRENT_CHILD_PID" >&2
+    kill -s "$signal" "$CURRENT_CHILD_PID" 2>/dev/null || true
+  fi
+}
+
+handle_interrupt() {
+  forward_signal INT
+}
+
+handle_termination() {
+  forward_signal TERM
+}
+
+run_tracked_command() {
+  local label="$1"
+  shift
+
+  "$@" &
+  CURRENT_CHILD_PID=$!
+  CURRENT_CHILD_LABEL="$label"
+
+  wait "$CURRENT_CHILD_PID"
+  local status=$?
+
+  CURRENT_CHILD_PID=""
+  CURRENT_CHILD_LABEL=""
+
+  if [[ "$INTERRUPTED" -eq 1 ]]; then
+    exit 130
+  fi
+
+  return "$status"
+}
+
+run_tracked_shell_command() {
+  local label="$1"
+  local command_text="$2"
+
+  run_tracked_command "$label" bash -lc "$command_text"
+}
+
+run_copilot_prompt() {
+  local prompt_text="$1"
+  local -a copilot_cmd
+
+  copilot_cmd=(copilot -p "$prompt_text" -s --no-ask-user)
+
+  if [[ -n "$MODEL" ]]; then
+    copilot_cmd+=(--model "$MODEL")
+  fi
+
+  if [[ -n "$AGENT" ]]; then
+    copilot_cmd+=(--agent "$AGENT")
+  fi
+
+  if [[ "$AUTO_APPROVE" -eq 1 ]]; then
+    copilot_cmd+=(--allow-all)
+  else
+    copilot_cmd+=(--allow-tool=read,write,shell --allow-all-paths)
+  fi
+
+  run_tracked_command "copilot" "${copilot_cmd[@]}"
+}
+
+run_logged_shell_command() {
+  local label="$1"
+  local command_text="$2"
+  local output_path="$3"
+
+  run_tracked_command "$label" bash -lc "set -o pipefail; { $command_text; } 2>&1 | tee '$output_path'"
+}
+
+test_output_requires_chorister_build() {
+  local output_path="$1"
+
+  [[ -f "$output_path" ]] || return 1
+
+  grep -Fq 'exec: "chorister": executable file not found in $PATH' "$output_path" || \
+    grep -Fq 'exec: "chorister": executable file not found' "$output_path"
+}
+
+ensure_chorister_cli() {
+  if [[ -x "$REPO_BIN/chorister" ]]; then
+    return 0
+  fi
+
+  printf 'Building local chorister CLI for verification recovery\n'
+  run_tracked_shell_command "build chorister CLI" "go build -o '$REPO_BIN/chorister' ./cmd/chorister"
+}
+
+run_final_verification() {
+  local target_rel="$1"
+  local output_path
+  output_path=$(mktemp)
+  LAST_VERIFICATION_OUTPUT=""
+
+  if run_logged_shell_command "final verification" "$TEST_CMD" "$output_path"; then
+    rm -f "$output_path"
+    return 0
+  fi
+
+  local test_status=$?
+
+  if test_output_requires_chorister_build "$output_path"; then
+    printf 'Final verification for %s needs the local chorister binary; building it and retrying once.\n' "$target_rel"
+    if ensure_chorister_cli && run_logged_shell_command "final verification retry" "$TEST_CMD" "$output_path"; then
+      rm -f "$output_path"
+      return 0
+    fi
+    test_status=$?
+  fi
+
+  LAST_VERIFICATION_OUTPUT=$(tail -n 200 "$output_path")
+
+  rm -f "$output_path"
+  return "$test_status"
+}
+
+build_recovery_prompt() {
+  local scope_label="$1"
+  local target_rel="$2"
+  local attempt_number="$3"
+
+  cat <<EOF
+Start by reading this $scope_label again: $target_rel
+
+Task:
+$PROMPT
+
+Recovery context:
+- The previous edit attempt did not pass final verification.
+- Investigate the verification output below, reason about the most likely root cause, and fix the underlying problem instead of papering over the symptom.
+- After reasoning through the failure, inspect any other files you need, apply a fix, and rerun the relevant tests until the failure is resolved.
+- This is recovery attempt $attempt_number of $FIX_ATTEMPTS for this target.
+- Suggested verification command (hint only, adjust as needed): $TEST_CMD
+
+Failed verification output:
+$LAST_VERIFICATION_OUTPUT
+EOF
+}
+
+trap handle_interrupt INT
+trap handle_termination TERM
 
 stash_failed_target() {
   local target_rel="$1"
@@ -153,6 +310,12 @@ while [[ $# -gt 0 ]]; do
     -t|--test-cmd)
       [[ $# -ge 2 ]] || fail "missing value for $1"
       TEST_CMD="$2"
+      shift 2
+      ;;
+    --fix-attempts)
+      [[ $# -ge 2 ]] || fail "missing value for $1"
+      [[ "$2" =~ ^[0-9]+$ ]] || fail "--fix-attempts must be a non-negative integer"
+      FIX_ATTEMPTS="$2"
       shift 2
       ;;
     -m|--model)
@@ -205,6 +368,8 @@ command -v copilot >/dev/null 2>&1 || fail "copilot is required"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
+REPO_BIN="$REPO_ROOT/bin"
+export PATH="$REPO_BIN:$PATH"
 
 require_clean_tree || fail "git working tree must be clean before running this script"
 
@@ -235,23 +400,7 @@ Guidelines:
 EOF
 )
 
-  copilot_cmd=(copilot -p "$scoped_prompt" -s --no-ask-user)
-
-  if [[ -n "$MODEL" ]]; then
-    copilot_cmd+=(--model "$MODEL")
-  fi
-
-  if [[ -n "$AGENT" ]]; then
-    copilot_cmd+=(--agent "$AGENT")
-  fi
-
-  if [[ "$AUTO_APPROVE" -eq 1 ]]; then
-    copilot_cmd+=(--allow-all)
-  else
-    copilot_cmd+=(--allow-tool=read,write,shell --allow-all-paths)
-  fi
-
-  if "${copilot_cmd[@]}"; then
+  if run_copilot_prompt "$scoped_prompt"; then
     :
   else
     copilot_status=$?
@@ -267,13 +416,38 @@ EOF
   fi
 
   printf 'Running final verification: %s\n' "$TEST_CMD"
-  if eval "$TEST_CMD"; then
+  if run_final_verification "$target_rel"; then
     :
   else
     test_status=$?
-    printf 'Final verification failed for %s with exit code %d\n' "$target_rel" "$test_status"
-    stash_failed_target "$target_rel" "final verification failed with status $test_status"
-    continue
+
+    for ((attempt = 1; attempt <= FIX_ATTEMPTS; attempt++)); do
+      printf 'Verification failed for %s; asking Copilot to investigate and fix it (attempt %d/%d).\n' "$target_rel" "$attempt" "$FIX_ATTEMPTS"
+      recovery_prompt=$(build_recovery_prompt "$scope_label" "$target_rel" "$attempt")
+
+      if run_copilot_prompt "$recovery_prompt"; then
+        :
+      else
+        copilot_status=$?
+        printf 'Copilot recovery failed for %s with exit code %d\n' "$target_rel" "$copilot_status"
+        stash_failed_target "$target_rel" "copilot recovery exited with status $copilot_status"
+        continue 2
+      fi
+
+      printf 'Re-running final verification: %s\n' "$TEST_CMD"
+      if run_final_verification "$target_rel"; then
+        test_status=0
+        break
+      fi
+
+      test_status=$?
+    done
+
+    if [[ "$test_status" -ne 0 ]]; then
+      printf 'Final verification failed for %s with exit code %d\n' "$target_rel" "$test_status"
+      stash_failed_target "$target_rel" "final verification failed with status $test_status"
+      continue
+    fi
   fi
 
   git add -A

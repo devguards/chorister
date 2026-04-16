@@ -166,6 +166,7 @@ spec:
                 enum:
                 - Active
                 - Expired
+                - Deprovisioned
                 type: string
               roleBindingRef:
                 description: roleBindingRef is the name of the created RoleBinding.

@@ -60,7 +60,7 @@ type ChoDomainMembershipStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// phase is the membership lifecycle state.
-	// +kubebuilder:validation:Enum=Active;Expired
+	// +kubebuilder:validation:Enum=Active;Expired;Deprovisioned
 	// +optional
 	Phase string `json:"phase,omitempty"`
 

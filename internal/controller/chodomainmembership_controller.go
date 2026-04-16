@@ -35,12 +35,20 @@ import (
 
 const (
 	labelMembership = "chorister.dev/membership"
+	// oidcSyncRequeueInterval is how often OIDC-sourced memberships are re-checked.
+	oidcSyncRequeueInterval = 5 * time.Minute
 )
+
+// OIDCGroupChecker verifies whether an identity belongs to an OIDC group.
+type OIDCGroupChecker interface {
+	IsMember(ctx context.Context, group, identity string) (bool, error)
+}
 
 // ChoDomainMembershipReconciler reconciles a ChoDomainMembership object
 type ChoDomainMembershipReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme           *runtime.Scheme
+	OIDCGroupChecker OIDCGroupChecker
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chodomainmemberships,verbs=get;list;watch;create;update;patch;delete
@@ -65,6 +73,17 @@ func (r *ChoDomainMembershipReconciler) Reconcile(ctx context.Context, req ctrl.
 	if membership.Spec.ExpiresAt != nil && !membership.Spec.ExpiresAt.Time.IsZero() {
 		if time.Now().After(membership.Spec.ExpiresAt.Time) {
 			return r.handleExpiredMembership(ctx, membership)
+		}
+	}
+
+	// OIDC group sync: verify identity still belongs to the group
+	if membership.Spec.Source == "oidc-group" && membership.Spec.OIDCGroup != "" && r.OIDCGroupChecker != nil {
+		isMember, err := r.OIDCGroupChecker.IsMember(ctx, membership.Spec.OIDCGroup, membership.Spec.Identity)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("checking OIDC group membership: %w", err)
+		}
+		if !isMember {
+			return r.handleDeprovisionedMembership(ctx, membership)
 		}
 	}
 
@@ -166,11 +185,53 @@ func (r *ChoDomainMembershipReconciler) Reconcile(ctx context.Context, req ctrl.
 	if membership.Spec.ExpiresAt != nil {
 		untilExpiry := time.Until(membership.Spec.ExpiresAt.Time)
 		if untilExpiry > 0 {
+			// For OIDC-sourced memberships, use the shorter of expiry or sync interval
+			if membership.Spec.Source == "oidc-group" && oidcSyncRequeueInterval < untilExpiry {
+				return ctrl.Result{RequeueAfter: oidcSyncRequeueInterval}, nil
+			}
 			return ctrl.Result{RequeueAfter: untilExpiry}, nil
 		}
 	}
 
+	// OIDC-sourced memberships need periodic re-reconciliation
+	if membership.Spec.Source == "oidc-group" {
+		return ctrl.Result{RequeueAfter: oidcSyncRequeueInterval}, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// handleDeprovisionedMembership removes RoleBindings when OIDC group membership is lost.
+func (r *ChoDomainMembershipReconciler) handleDeprovisionedMembership(ctx context.Context, membership *choristerv1alpha1.ChoDomainMembership) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Delete all RoleBindings owned by this membership
+	rbList := &rbacv1.RoleBindingList{}
+	if err := r.List(ctx, rbList, client.MatchingLabels{labelMembership: membership.Name}); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i := range rbList.Items {
+		if err := r.Delete(ctx, &rbList.Items[i]); err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+
+	membership.Status.Phase = "Deprovisioned"
+	membership.Status.RoleBindingRef = ""
+	setCondition(&membership.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "OIDCGroupRemoved",
+		Message:            fmt.Sprintf("Identity %q is no longer a member of OIDC group %q", membership.Spec.Identity, membership.Spec.OIDCGroup),
+		ObservedGeneration: membership.Generation,
+	})
+
+	if err := r.Status().Update(ctx, membership); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Deprovisioned membership", "identity", membership.Spec.Identity, "oidcGroup", membership.Spec.OIDCGroup)
+	return ctrl.Result{RequeueAfter: oidcSyncRequeueInterval}, nil
 }
 
 // handleExpiredMembership removes RoleBindings and marks membership as expired.
