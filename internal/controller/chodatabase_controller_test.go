@@ -517,6 +517,105 @@ var _ = Describe("ChoDatabase Controller", func() {
 	})
 
 	// -----------------------------------------------------------------------
+	// Gap 07 — Final snapshot on deletion
+	// -----------------------------------------------------------------------
+	Context("Gap 07 — Final snapshot on deletion", func() {
+		It("should set finalSnapshotRef and remove finalizer on production deletion", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "final-snap-db", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace}}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify finalizer
+			Expect(k8sClient.Get(ctx, req.NamespacedName, db)).To(Succeed())
+			Expect(db.Finalizers).To(ContainElement("chorister.dev/database-archive"))
+
+			// Delete the resource (sets DeletionTimestamp)
+			Expect(k8sClient.Delete(ctx, db)).To(Succeed())
+
+			// Reconcile during deletion: should set FinalSnapshotRef
+			result, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch and verify FinalSnapshotRef is populated
+			Expect(k8sClient.Get(ctx, req.NamespacedName, db)).To(Succeed())
+			Expect(db.Status.FinalSnapshotRef).NotTo(BeEmpty())
+			Expect(db.Status.FinalSnapshotRef).To(HavePrefix("final-final-snap-db-"))
+
+			// SGBackup name uses <domain>-<name> convention for sgCluster field
+			// The backup name itself is final-<db.Name>-<timestamp>
+
+			// In envtest (no StackGres CRDs), the controller sets the ref and requeues
+			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+
+			// Second reconcile: backup not found (no StackGres) → removes finalizer
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Object should now be gone (finalizer removed, K8s completes deletion)
+			err = k8sClient.Get(ctx, req.NamespacedName, db)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should skip final snapshot for sandbox ChoDatabase", func() {
+			// Create a sandbox namespace with the sandbox label
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "sandbox-snap-test",
+					Labels: map[string]string{"chorister.dev/sandbox": "test"},
+				},
+			}
+			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, ns))).To(Succeed())
+
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "sandbox-snap-db", Namespace: "sandbox-snap-test"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "dev",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace}}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify finalizer was added
+			Expect(k8sClient.Get(ctx, req.NamespacedName, db)).To(Succeed())
+			Expect(db.Finalizers).To(ContainElement("chorister.dev/database-archive"))
+
+			// Delete
+			Expect(k8sClient.Delete(ctx, db)).To(Succeed())
+
+			// Reconcile during deletion: sandbox skips backup, removes finalizer immediately
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Object should be gone — no FinalSnapshotRef, no requeue
+			err = k8sClient.Get(ctx, req.NamespacedName, db)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	// -----------------------------------------------------------------------
 	// Not-found handling
 	// -----------------------------------------------------------------------
 	Context("Not-found handling", func() {
