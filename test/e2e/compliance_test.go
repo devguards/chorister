@@ -233,6 +233,60 @@ func TestE2E_IngressRequiresAuth(t *testing.T) {
 	testEnv.Test(t, feature)
 }
 
+func TestE2E_WildcardEgressRejected(t *testing.T) {
+	const appName = "e2e-wildcardegress"
+	const domain = "payments"
+
+	feature := features.New("wildcard egress rejected").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cmd := exec.CommandContext(ctx, "chorister", "admin", "app", "create", appName,
+				"--owners", "test@chorister.dev",
+				"--compliance", "essential",
+				"--domains", domain)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to create app: %v: %s", err, out)
+			}
+			if err := waitForCondition(ctx, 60*time.Second, 2*time.Second, func() (bool, error) {
+				return namespaceExists(ctx, cfg, appName+"-"+domain)
+			}); err != nil {
+				t.Fatalf("namespace not created: %v", err)
+			}
+			return ctx
+		}).
+		Assess("wildcard egress is rejected by webhook", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			network := &choristerv1alpha1.ChoNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "wildcard-egress-e2e",
+					Namespace: appName + "-" + domain,
+				},
+				Spec: choristerv1alpha1.ChoNetworkSpec{
+					Application: appName,
+					Domain:      domain,
+					Egress: &choristerv1alpha1.NetworkEgressSpec{
+						Allowlist: []string{"*"},
+					},
+				},
+			}
+			err := cfg.Client().Resources().Create(ctx, network)
+			if err == nil {
+				_ = cfg.Client().Resources().Delete(ctx, network)
+				t.Fatal("expected webhook to reject ChoNetwork with wildcard egress")
+			}
+			if !strings.Contains(err.Error(), "wildcard egress") {
+				t.Fatalf("expected error about wildcard egress, got: %v", err)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cleanupApp(ctx, t, appName)
+			return ctx
+		}).
+		Feature()
+
+	testEnv.Test(t, feature)
+}
+
 func TestE2E_AuthNoneAllRoutesRejected(t *testing.T) {
 	const appName = "e2e-allnone"
 	const domain = "payments"
