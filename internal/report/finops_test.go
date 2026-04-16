@@ -35,7 +35,7 @@ func testFinOpsScheme() *runtime.Scheme {
 
 func testFinOpsApp(name string) *choristerv1alpha1.ChoApplication {
 	return &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: query.ControlPlaneNamespace},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners: []string{"admin@example.com"},
 			Policy: choristerv1alpha1.ApplicationPolicy{

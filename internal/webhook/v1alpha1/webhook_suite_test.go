@@ -115,6 +115,12 @@ var _ = BeforeSuite(func() {
 	err = SetupChoNetworkWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupChoPromotionRequestWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = SetupChoDomainMembershipWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {

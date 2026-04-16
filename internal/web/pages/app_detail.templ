@@ -1,0 +1,190 @@
+package pages
+
+import (
+	"fmt"
+	"strings"
+	v1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/query"
+)
+
+// AppDetailPage shows a single application's domains and policy.
+templ AppDetailPage(app *v1alpha1.ChoApplication, domains []query.DomainInfo) {
+	@Layout("App: "+app.Name, "apps") {
+		<!-- Breadcrumb -->
+		<nav class="flex items-center gap-2 text-xs text-gray-500 mb-4">
+			<a href="/apps" class="hover:text-brand hover:underline">Applications</a>
+			<span>›</span>
+			<span class="text-gray-900 font-medium">{ app.Name }</span>
+		</nav>
+		<div class="space-y-6">
+			<!-- App policy card -->
+			<div class="bg-white border border-gray-200 rounded-lg p-5">
+				<div class="flex items-start justify-between mb-4">
+					<div>
+						<h2 class="text-base font-bold text-gray-900">{ app.Name }</h2>
+						<div class="flex items-center gap-2 mt-1">
+							@complianceBadge(app.Spec.Policy.Compliance)
+							<span class="text-xs text-gray-400">{ fmt.Sprint(len(app.Spec.Owners)) } owner(s)</span>
+						</div>
+					</div>
+					<a
+						href={ templ.URL("/promotions?app=" + app.Name) }
+						class="text-xs font-medium text-brand border border-brand rounded-md px-3 py-1.5 hover:bg-brand-light transition-colors"
+					>View Promotions</a>
+				</div>
+				<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+					<div class="bg-gray-50 rounded-md p-3">
+						<div class="text-gray-500 mb-1">Required approvers</div>
+						<div class="font-semibold">{ fmt.Sprint(app.Spec.Policy.Promotion.RequiredApprovers) }</div>
+					</div>
+					<div class="bg-gray-50 rounded-md p-3">
+						<div class="text-gray-500 mb-1">Scan gate</div>
+						if app.Spec.Policy.Promotion.RequireSecurityScan {
+							<div class="font-semibold text-green-700">✓ enabled</div>
+						} else {
+							<div class="font-semibold text-gray-400">disabled</div>
+						}
+					</div>
+					<div class="bg-gray-50 rounded-md p-3">
+						<div class="text-gray-500 mb-1">Archive retention</div>
+						<div class="font-semibold">
+							if app.Spec.Policy.ArchiveRetention != "" {
+								{ app.Spec.Policy.ArchiveRetention }
+							} else {
+								30d (default)
+							}
+						</div>
+					</div>
+					<div class="bg-gray-50 rounded-md p-3">
+						<div class="text-gray-500 mb-1">Domains</div>
+						<div class="font-semibold">{ fmt.Sprint(len(app.Spec.Domains)) }</div>
+					</div>
+				</div>
+				<!-- Owners list -->
+				if len(app.Spec.Owners) > 0 {
+					<div class="mt-4">
+						<div class="text-xs text-gray-500 mb-1">Owners</div>
+						<div class="flex flex-wrap gap-2">
+							for _, owner := range app.Spec.Owners {
+								<span class="text-xs bg-gray-100 rounded px-2 py-0.5 text-gray-700">{ owner }</span>
+							}
+						</div>
+					</div>
+				}
+			</div>
+			<!-- Domains table -->
+			<div>
+				<h3 class="text-sm font-semibold text-gray-900 mb-3">
+					Domains ({ fmt.Sprint(len(domains)) })
+				</h3>
+				<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+					<table class="w-full text-sm">
+						<thead class="bg-gray-50 border-b border-gray-200">
+							<tr>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Domain</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sensitivity</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Namespace</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Resources</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Consumes</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Supplies</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-gray-100">
+							for _, d := range domains {
+								@domainRow(app.Name, app.Spec.Domains, d)
+							}
+							if len(domains) == 0 {
+								@emptyState(7, "No domains found for this application.")
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+			<!-- Cross-app links -->
+			if len(app.Spec.Links) > 0 {
+				<div>
+					<h3 class="text-sm font-semibold text-gray-900 mb-3">Cross-App Links ({ fmt.Sprint(len(app.Spec.Links)) })</h3>
+					<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+						<table class="w-full text-sm">
+							<thead class="bg-gray-50 border-b border-gray-200">
+								<tr>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Name</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Target App / Domain</th>
+								<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Port</th>
+								</tr>
+							</thead>
+							<tbody class="divide-y divide-gray-100">
+								for _, link := range app.Spec.Links {
+									<tr class="hover:bg-gray-50">
+										<td class="px-4 py-3 font-medium">{ link.Name }</td>
+										<td class="px-4 py-3 text-gray-600">{ link.Target }/{ link.TargetDomain }</td>
+										<td class="px-4 py-3 text-gray-600 tabular-nums">{ fmt.Sprint(link.Port) }</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			}
+		</div>
+	}
+}
+
+templ domainRow(appName string, domainSpecs []v1alpha1.DomainSpec, d query.DomainInfo) {
+	<tr class="hover:bg-gray-50 transition-colors">
+		<td class="px-4 py-3 font-semibold">
+			<a
+				href={ templ.URL("/sandboxes?app=" + appName + "&domain=" + d.Name) }
+				class="text-brand hover:underline"
+			>{ d.Name }</a>
+		</td>
+		<td class="px-4 py-3">
+			@sensitivityBadge(d.Sensitivity)
+		</td>
+		<td class="px-4 py-3">
+			<code class="text-xs bg-gray-100 rounded px-1.5 py-0.5 text-gray-700">{ d.Namespace }</code>
+		</td>
+		<td class="px-4 py-3 text-gray-600 tabular-nums">{ fmt.Sprint(d.ResourceCount) }</td>
+		<td class="px-4 py-3 text-gray-600 text-xs">
+			{ domainConsumes(appName, domainSpecs, d.Name) }
+		</td>
+		<td class="px-4 py-3 text-gray-600 text-xs">
+			{ domainSupplies(appName, domainSpecs, d.Name) }
+		</td>
+		<td class="px-4 py-3">
+			if d.Isolated {
+				<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">🔒 Isolated</span>
+			} else {
+				@phaseBadge(d.Phase)
+			}
+		</td>
+	</tr>
+}
+
+// domainConsumes returns the consumes summary for a domain from the app spec.
+func domainConsumes(appName string, specs []v1alpha1.DomainSpec, name string) string {
+	for _, d := range specs {
+		if d.Name == name {
+			if len(d.Consumes) == 0 {
+				return "—"
+			}
+			parts := make([]string, 0, len(d.Consumes))
+			for _, c := range d.Consumes {
+				parts = append(parts, c.Domain+"/"+strings.Join(c.Services, ","))
+			}
+			return strings.Join(parts, " · ")
+		}
+	}
+	return "—"
+}
+
+// domainSupplies returns the supplies summary for a domain from the app spec.
+func domainSupplies(appName string, specs []v1alpha1.DomainSpec, name string) string {
+	for _, d := range specs {
+		if d.Name == name && d.Supplies != nil {
+			return strings.Join(d.Supplies.Services, ", ")
+		}
+	}
+	return "—"
+}

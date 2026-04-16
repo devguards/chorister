@@ -549,18 +549,18 @@ Write the full test suite **before** implementing reconciliation logic. Every im
 
 ## Phase 14: Security scanning & vulnerability management
 
-- [x] **14.1 — Image scanning before promotion**
+- [~] **14.1 — Image scanning before promotion**
   - Controller runs Trivy scan on all images in a ChoPromotionRequest
   - Block promotion if critical CVEs found (`standard`+)
   - Store results in ChoVulnerabilityReport CRD
   - **Test:** create promotion request with image containing known CVE → assert promotion blocked. Use clean image → promotion proceeds.
 
-- [x] **14.2 — Continuous vulnerability scanning CronJobs**
+- [~] **14.2 — Continuous vulnerability scanning CronJobs**
   - For `standard`+ applications, controller creates CronJob per domain (daily re-scan)
   - Results written to ChoVulnerabilityReport CRDs
   - **Test:** create `standard` application with deployed images → assert CronJob exists → trigger manual run → assert ChoVulnerabilityReport created
 
-- [x] **14.3 — kube-bench periodic validation**
+- [~] **14.3 — kube-bench periodic validation**
   - Controller creates kube-bench CronJob for cluster hardening checks
   - Results stored in ChoCluster.status.cisBenchmark
   - **Test:** assert kube-bench CronJob exists → trigger run → assert results in ChoCluster status
@@ -662,7 +662,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - `chorister admin upgrade --rollback <rev>` removes canary revision
   - **Test:** deploy v1 (stable) → deploy v2 (canary) → retag one namespace to v2 → assert v2 reconciles it → promote v2 → assert all namespaces on v2 → old controller idle
 
-- [x] **19.3 — Compilation stability tracking**
+- [~] **19.3 — Compilation stability tracking**
   - Controller records `compiledWithRevision` in each resource's status
   - `chorister diff` shows when compiled output differs between controller revisions even if DSL is unchanged
   - **Test:** compile resource with v1 → upgrade to v2 (different output) → `chorister diff` shows the compilation difference
@@ -683,7 +683,7 @@ Write the full test suite **before** implementing reconciliation logic. Every im
   - Cost visible in sandbox status: `status.sandbox.estimatedMonthlyCost`
   - **Test:** set rates in ChoCluster → create sandbox with known resources → assert estimated cost matches expected calculation
 
-- [x] **20.3 — Domain sandbox budget enforcement**
+- [~] **20.3 — Domain sandbox budget enforcement**
   - `policy.sandbox.defaultBudgetPerDomain` in ChoApplication, overridable per domain
   - `chorister sandbox create` rejected if domain total would exceed budget (with cost breakdown in error)
   - Alert at configurable threshold (default 80%)

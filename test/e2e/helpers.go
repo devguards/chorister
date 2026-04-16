@@ -104,3 +104,13 @@ func waitForCondition(ctx context.Context, timeout, interval time.Duration, chec
 		}
 	}
 }
+
+// cleanupApp deletes a ChoApplication via CLI. Best-effort; logs errors but does not fail.
+func cleanupApp(ctx context.Context, t *testing.T, appName string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "chorister", "admin", "app", "delete", appName, "--confirm")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("cleanup app %s: %v: %s (best-effort)", appName, err, out)
+	}
+}

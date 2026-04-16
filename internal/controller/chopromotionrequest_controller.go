@@ -155,6 +155,24 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	// If Approved, execute the promotion
 	if pr.Status.Phase == "Approved" {
+		// Check domain isolation before executing
+		app := &choristerv1alpha1.ChoApplication{}
+		if err := r.Get(ctx, types.NamespacedName{Name: pr.Spec.Application, Namespace: pr.Namespace}, app); err != nil {
+			return ctrl.Result{}, err
+		}
+		if IsDomainIsolated(app, pr.Spec.Domain) {
+			pr.Status.Phase = "Failed"
+			setCondition(&pr.Status.Conditions, metav1.Condition{
+				Type:               "Failed",
+				Status:             metav1.ConditionTrue,
+				Reason:             "DomainIsolated",
+				Message:            fmt.Sprintf("Domain %q is isolated; promotion blocked", pr.Spec.Domain),
+				ObservedGeneration: pr.Generation,
+			})
+			log.Info("Promotion blocked: domain is isolated", "name", pr.Name, "domain", pr.Spec.Domain)
+			return ctrl.Result{}, r.Status().Update(ctx, pr)
+		}
+
 		pr.Status.Phase = "Executing"
 		setCondition(&pr.Status.Conditions, metav1.Condition{
 			Type:               "Executing",
@@ -171,8 +189,10 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		if err := r.Get(ctx, req.NamespacedName, pr); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
 
-		// Execute: copy resources from sandbox to production
+	// If Executing, copy resources (handles both fresh transition and retry after conflict/crash)
+	if pr.Status.Phase == "Executing" {
 		sandboxNs := SandboxNamespace(pr.Spec.Application, pr.Spec.Domain, pr.Spec.Sandbox)
 		prodNs := fmt.Sprintf("%s-%s", pr.Spec.Application, pr.Spec.Domain)
 

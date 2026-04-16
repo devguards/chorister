@@ -484,7 +484,86 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 		})
 
 		It("should block promotion when domain is degraded", func() {
-			Skip("awaiting Phase 15.3: Service health baseline and incident response")
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "promo-iso-app",
+					Namespace: "default",
+					Annotations: map[string]string{
+						"chorister.dev/isolate-payments": "true",
+					},
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion: choristerv1alpha1.PromotionPolicy{
+							RequiredApprovers: 1,
+							AllowedRoles:      []string{"org-admin"},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			for _, nsName := range []string{"promo-iso-app-payments", "promo-iso-app-payments-sandbox-dev"} {
+				Expect(ensureNamespaceExists(ctx, nsName)).To(Succeed())
+			}
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-iso-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-iso-app",
+					Domain:      "payments",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add approval
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile → Approved
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Reconcile → should fail with DomainIsolated
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Failed"))
+
+			// Verify condition reason is DomainIsolated
+			var found bool
+			for _, c := range pr.Status.Conditions {
+				if c.Reason == "DomainIsolated" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected DomainIsolated condition reason")
 		})
 
 		It("should block promotion on critical image CVE", func() {

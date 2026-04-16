@@ -1,0 +1,88 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/chorister-dev/chorister/internal/query"
+)
+
+// MembersPage lists all ChoDomainMemberships.
+templ MembersPage(members []query.MemberInfo, queryErr error) {
+	@Layout("Members", "members") {
+		@errBanner(queryErr)
+		<div class="space-y-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-base font-bold text-gray-900">Domain Memberships</h2>
+					<p class="text-xs text-gray-500 mt-0.5">{ fmt.Sprint(len(members)) } active membership(s)</p>
+				</div>
+				<a
+					href="/members?include_expired=true"
+					class="text-xs text-gray-500 hover:text-brand hover:underline"
+				>Show expired</a>
+			</div>
+			<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+				<table class="w-full text-sm">
+					<thead class="bg-gray-50 border-b border-gray-200">
+						<tr>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Identity</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">App / Domain</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Role</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Expires</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-gray-100">
+						for _, m := range members {
+							@memberRow(m)
+						}
+						if len(members) == 0 {
+							@emptyState(6, "No memberships found. Run: chorister admin member add --app <app> --domain <domain> --identity <email> --role developer")
+						}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	}
+}
+
+templ memberRow(m query.MemberInfo) {
+	<tr class={ templ.KV("opacity-60", m.Phase == "Expired"), "hover:bg-gray-50 transition-colors" }>
+		<td class="px-4 py-3 font-medium">{ m.Identity }</td>
+		<td class="px-4 py-3">
+			<div class="text-gray-900">{ m.Application }</div>
+			<div class="text-xs text-gray-500">{ m.Domain }</div>
+		</td>
+		<td class="px-4 py-3">
+			@roleBadge(m.Role)
+		</td>
+		<td class="px-4 py-3 text-xs text-gray-500">{ m.Source }</td>
+		<td class="px-4 py-3 text-xs text-gray-600">
+			if m.ExpiresAt != nil {
+				if m.DaysUntilExpiry < 0 {
+					<span class="text-red-600 font-medium">expired { fmt.Sprint(-m.DaysUntilExpiry) }d ago</span>
+				} else if m.DaysUntilExpiry <= 7 {
+					<span class="text-amber-600 font-medium">in { fmt.Sprint(m.DaysUntilExpiry) }d</span>
+				} else {
+					{ m.ExpiresAt.Format("2006-01-02") }
+				}
+			} else {
+				<span class="text-gray-400">never</span>
+			}
+		</td>
+		<td class="px-4 py-3">
+			@phaseBadge(m.Phase)
+		</td>
+	</tr>
+}
+
+templ roleBadge(role string) {
+	switch role {
+		case "org-admin", "domain-admin":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-purple-100 text-purple-700">{ role }</span>
+		case "developer":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-brand-light text-brand">{ role }</span>
+		default:
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-gray-100 text-gray-600">{ role }</span>
+	}
+}

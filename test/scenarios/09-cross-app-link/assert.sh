@@ -39,9 +39,14 @@ curl_from_pod() {
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application-retail.yaml"
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application-capital.yaml"
+  cho admin app create "$RETAIL_APP" \
+    --owners test@chorister.dev \
+    --compliance essential \
+    --domains payments
+  cho admin app create "$CAPITAL_APP" \
+    --owners test@chorister.dev \
+    --compliance essential \
+    --domains pricing
 
   wait_for_namespace "$PAYMENTS_NS" 60
   wait_for_namespace "$PRICING_NS" 60
@@ -86,8 +91,7 @@ assert_httproute_and_referencegrant_exist() {
   if [[ "$route_count" -gt 0 ]]; then
     _assert_pass "HTTPRoute exists in ${PAYMENTS_NS}"
   else
-    # Non-fatal: controller may not have implemented link routing yet
-    echo "[SKIP] HTTPRoute not found in ${PAYMENTS_NS} (cross-app link controller may be a stub)"
+    _assert_fail "HTTPRoute exists in ${PAYMENTS_NS}" "not found (count=${route_count})"
   fi
 
   local grant_count
@@ -95,7 +99,7 @@ assert_httproute_and_referencegrant_exist() {
   if [[ "$grant_count" -gt 0 ]]; then
     _assert_pass "ReferenceGrant exists in ${PRICING_NS}"
   else
-    echo "[SKIP] ReferenceGrant not found in ${PRICING_NS} (cross-app link controller may be a stub)"
+    _assert_fail "ReferenceGrant exists in ${PRICING_NS}" "not found (count=${grant_count})"
   fi
 }
 
@@ -153,10 +157,8 @@ assert_undeclared_consumer_blocked() {
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
 cleanup() {
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-application-retail.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-application-capital.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
+  cho admin app delete "$RETAIL_APP" --confirm 2>/dev/null || true
+  cho admin app delete "$CAPITAL_APP" --confirm 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────

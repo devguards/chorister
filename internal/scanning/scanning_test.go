@@ -18,8 +18,20 @@ package scanning
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 )
+
+// mockRunner is a test double for CommandRunner.
+type mockRunner struct {
+	output []byte
+	err    error
+}
+
+func (m *mockRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return m.output, m.err
+}
 
 func TestSignatureScanner_NoVulnerabilities(t *testing.T) {
 	scanner := NewDefaultScanner()
@@ -151,4 +163,124 @@ func TestSignatureScanner_CaseInsensitive(t *testing.T) {
 
 func TestNewDefaultScanner_ImplementsInterface(t *testing.T) {
 	var _ Scanner = NewDefaultScanner()
+}
+
+// ---------------------------------------------------------------------------
+// TrivyScanner tests (using mockRunner)
+// ---------------------------------------------------------------------------
+
+func trivyJSON(results []trivyResult) []byte {
+	report := trivyReport{Results: results}
+	b, _ := json.Marshal(report)
+	return b
+}
+
+func TestTrivyScanner_NoVulnerabilities(t *testing.T) {
+	scanner := &TrivyScanner{Runner: &mockRunner{output: trivyJSON(nil)}}
+	result, err := scanner.ScanImages(context.Background(), []string{"clean:v1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Scanner != "trivy" {
+		t.Errorf("expected scanner name trivy, got %s", result.Scanner)
+	}
+	if result.CriticalCount != 0 {
+		t.Errorf("expected 0 critical, got %d", result.CriticalCount)
+	}
+	if len(result.Findings) != 0 {
+		t.Errorf("expected 0 findings, got %d", len(result.Findings))
+	}
+}
+
+func TestTrivyScanner_ParsesCriticalAndHigh(t *testing.T) {
+	out := trivyJSON([]trivyResult{{
+		Vulnerabilities: []trivyVulnerability{
+			{VulnerabilityID: "CVE-2024-1234", PkgName: "libssl", Severity: "CRITICAL", Title: "OpenSSL RCE", FixedVersion: "3.0.14"},
+			{VulnerabilityID: "CVE-2024-5678", PkgName: "curl", Severity: "HIGH", Title: "Curl HSTS bypass"},
+		},
+	}})
+	scanner := &TrivyScanner{Runner: &mockRunner{output: out}}
+	result, err := scanner.ScanImages(context.Background(), []string{"myapp:v1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CriticalCount != 1 {
+		t.Errorf("expected 1 critical, got %d", result.CriticalCount)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(result.Findings))
+	}
+	if result.Findings[0].ID != "CVE-2024-1234" {
+		t.Errorf("expected CVE-2024-1234, got %s", result.Findings[0].ID)
+	}
+	if result.Findings[0].Severity != "Critical" {
+		t.Errorf("expected normalized Critical, got %s", result.Findings[0].Severity)
+	}
+	if result.Findings[0].FixedVersion != "3.0.14" {
+		t.Errorf("expected fixed version 3.0.14, got %s", result.Findings[0].FixedVersion)
+	}
+	if result.Findings[1].Severity != "HIGH" {
+		t.Errorf("expected HIGH, got %s", result.Findings[1].Severity)
+	}
+}
+
+func TestTrivyScanner_MultipleImages(t *testing.T) {
+	out := trivyJSON([]trivyResult{{
+		Vulnerabilities: []trivyVulnerability{
+			{VulnerabilityID: "CVE-2024-0001", PkgName: "zlib", Severity: "CRITICAL", Title: "zlib overflow"},
+		},
+	}})
+	scanner := &TrivyScanner{Runner: &mockRunner{output: out}}
+	result, err := scanner.ScanImages(context.Background(), []string{"img1:v1", "img2:v2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Each image returns the same mock output: 1 critical each
+	if result.CriticalCount != 2 {
+		t.Errorf("expected 2 critical across 2 images, got %d", result.CriticalCount)
+	}
+	if len(result.Findings) != 2 {
+		t.Errorf("expected 2 findings, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Image != "img1:v1" {
+		t.Errorf("expected image img1:v1, got %s", result.Findings[0].Image)
+	}
+	if result.Findings[1].Image != "img2:v2" {
+		t.Errorf("expected image img2:v2, got %s", result.Findings[1].Image)
+	}
+}
+
+func TestTrivyScanner_ExecError(t *testing.T) {
+	scanner := &TrivyScanner{Runner: &mockRunner{err: fmt.Errorf("trivy not found")}}
+	_, err := scanner.ScanImages(context.Background(), []string{"myapp:v1"})
+	if err == nil {
+		t.Fatal("expected error when trivy exec fails")
+	}
+}
+
+func TestTrivyScanner_InvalidJSON(t *testing.T) {
+	scanner := &TrivyScanner{Runner: &mockRunner{output: []byte("not json")}}
+	_, err := scanner.ScanImages(context.Background(), []string{"myapp:v1"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestTrivyScanner_ServerMode(t *testing.T) {
+	// Verify that server URL is accepted (we can't verify the args without
+	// inspecting the mock, but we ensure it doesn't error).
+	out := trivyJSON(nil)
+	scanner := NewTrivyScanner("http://trivy.internal:4954")
+	scanner.Runner = &mockRunner{output: out}
+	result, err := scanner.ScanImages(context.Background(), []string{"clean:v1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CriticalCount != 0 {
+		t.Errorf("expected 0 critical, got %d", result.CriticalCount)
+	}
+}
+
+func TestTrivyScanner_ImplementsInterface(t *testing.T) {
+	var _ Scanner = &TrivyScanner{}
 }

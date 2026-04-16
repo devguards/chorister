@@ -18,6 +18,7 @@ package query
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
@@ -64,7 +65,7 @@ func (q *Querier) ListPromotionRequests(ctx context.Context, filters PromotionFi
 		if phase == "" {
 			phase = "Pending"
 		}
-		if filters.Status != "" && filters.Status != "all" && phase != filters.Status {
+		if filters.Status != "" && filters.Status != "all" && !strings.EqualFold(phase, filters.Status) {
 			continue
 		}
 

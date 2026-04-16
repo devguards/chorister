@@ -3,6 +3,7 @@ module github.com/chorister-dev/chorister
 go 1.25.3
 
 require (
+	github.com/a-h/templ v0.3.1001
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2

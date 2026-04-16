@@ -1,0 +1,151 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/chorister-dev/chorister/internal/query"
+)
+
+// EventsPage renders the live event stream page.
+// The initial table is populated from a synchronous K8s Event list;
+// subsequent events arrive via EventSource (SSE) at /api/events.
+templ EventsPage(initial []query.EventInfo) {
+	@Layout("Live Events", "events") {
+		<div class="space-y-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-base font-bold text-gray-900">Live Events</h2>
+					<p class="text-xs text-gray-500 mt-0.5">K8s events from the chorister control plane. New events appear in real-time.</p>
+				</div>
+				<!-- SSE connection indicator -->
+				<div class="flex items-center gap-2">
+					<span id="sse-dot" class="w-2 h-2 rounded-full bg-gray-300"></span>
+					<span id="sse-label" class="text-xs text-gray-400">Connecting…</span>
+				</div>
+			</div>
+			<!-- Event type filter -->
+			<div class="flex items-center gap-3 text-xs">
+				<span class="text-gray-500">Filter:</span>
+				<label class="flex items-center gap-1.5 cursor-pointer">
+					<input type="checkbox" id="filter-normal" checked class="rounded accent-brand"/>
+					<span class="text-gray-600">Normal</span>
+				</label>
+				<label class="flex items-center gap-1.5 cursor-pointer">
+					<input type="checkbox" id="filter-warning" checked class="rounded accent-amber-500"/>
+					<span class="text-amber-600">Warning</span>
+				</label>
+				<button
+					onclick="document.getElementById('events-body').innerHTML = ''; return false;"
+					class="ml-auto text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-2 py-1"
+				>Clear</button>
+			</div>
+			<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+				<table class="w-full text-sm" id="events-table">
+					<thead class="bg-gray-50 border-b border-gray-200">
+						<tr>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-36">Time</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-20">Type</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-28">Reason</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Object</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Message</th>
+						</tr>
+					</thead>
+					<tbody id="events-body" class="divide-y divide-gray-100">
+						for _, ev := range initial {
+							@eventRow(ev.Time.Format("2006-01-02 15:04:05"), ev.Type, ev.Reason, ev.InvolvedObject, ev.Message)
+						}
+						if len(initial) == 0 {
+							<tr id="empty-row">
+								<td colspan="5" class="px-4 py-10 text-center text-gray-400 text-xs">Waiting for events…</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		</div>
+		<!-- SSE client -->
+		<script>
+		(function() {
+			const dot   = document.getElementById('sse-dot');
+			const label = document.getElementById('sse-label');
+			const tbody = document.getElementById('events-body');
+
+			function connected() {
+				dot.className   = 'w-2 h-2 rounded-full bg-green-500';
+				label.textContent = 'Connected';
+				label.className = 'text-xs text-green-600';
+			}
+			function disconnected() {
+				dot.className   = 'w-2 h-2 rounded-full bg-red-400';
+				label.textContent = 'Disconnected — reconnecting…';
+				label.className = 'text-xs text-red-500';
+			}
+
+			function buildRow(ev) {
+				const typeClass = ev.type === 'Warning'
+					? 'text-xs font-semibold text-amber-600'
+					: 'text-xs font-semibold text-gray-500';
+				return `<tr class="hover:bg-gray-50 sse-new">
+					<td class="px-4 py-2 text-xs text-gray-500 font-mono tabular-nums">${ev.time}</td>
+					<td class="px-4 py-2"><span class="${typeClass}">${ev.type}</span></td>
+					<td class="px-4 py-2 text-xs font-medium text-gray-700">${ev.reason}</td>
+					<td class="px-4 py-2 text-xs text-gray-500 font-mono">${ev.object}</td>
+					<td class="px-4 py-2 text-xs text-gray-600">${ev.message}</td>
+				</tr>`;
+			}
+
+			function connect() {
+				const es = new EventSource('/api/events');
+
+				es.addEventListener('ping', () => connected());
+
+				es.addEventListener('event', function(e) {
+					connected();
+					try {
+						const data = JSON.parse(e.data);
+						// Apply filter checkboxes
+						const showNormal  = document.getElementById('filter-normal').checked;
+						const showWarning = document.getElementById('filter-warning').checked;
+						if (data.type === 'Normal'  && !showNormal)  return;
+						if (data.type === 'Warning' && !showWarning) return;
+						// Remove "waiting" placeholder
+						const empty = document.getElementById('empty-row');
+						if (empty) empty.remove();
+						// Prepend new row
+						tbody.insertAdjacentHTML('afterbegin', buildRow(data));
+						// Cap table at 200 rows to avoid memory growth
+						while (tbody.children.length > 200) {
+							tbody.removeChild(tbody.lastElementChild);
+						}
+					} catch(err) {
+						console.error('SSE parse error:', err);
+					}
+				});
+
+				es.onerror = function() {
+					disconnected();
+					es.close();
+					setTimeout(connect, 5000);
+				};
+			}
+
+			connect();
+		})();
+		</script>
+	}
+}
+
+templ eventRow(t, evType, reason, object, message string) {
+	<tr class="hover:bg-gray-50">
+		<td class="px-4 py-2 text-xs text-gray-500 font-mono tabular-nums">{ t }</td>
+		<td class="px-4 py-2">
+			if evType == "Warning" {
+				<span class="text-xs font-semibold text-amber-600">Warning</span>
+			} else {
+				<span class="text-xs font-semibold text-gray-500">Normal</span>
+			}
+		</td>
+		<td class="px-4 py-2 text-xs font-medium text-gray-700">{ reason }</td>
+		<td class="px-4 py-2 text-xs text-gray-500 font-mono">{ fmt.Sprint(object) }</td>
+		<td class="px-4 py-2 text-xs text-gray-600">{ message }</td>
+	</tr>
+}

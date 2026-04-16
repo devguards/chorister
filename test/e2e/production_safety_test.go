@@ -24,7 +24,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -53,12 +55,56 @@ func TestE2E_CannotApplyToProd(t *testing.T) {
 }
 
 func TestE2E_PromotionRequiresApproval(t *testing.T) {
-	feature := features.New("promotion requires approval").
-		Assess("promotion with 0 approvals does not modify prod", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 8: promotion lifecycle reconciler")
+	const appName = "e2e-promapproval"
+	const domain = "payments"
+	const sandboxName = "dev"
+	prodNS := appName + "-" + domain
 
-			// Create ChoPromotionRequest, do not approve
-			// Assert production namespace is unchanged
+	feature := features.New("promotion requires approval").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Create app with requiredApprovals=1
+			cmd := exec.CommandContext(ctx, "chorister", "admin", "app", "create", appName,
+				"--owners", "test@chorister.dev",
+				"--compliance", "essential",
+				"--domains", domain)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to create app: %v: %s", err, out)
+			}
+			if err := waitForCondition(ctx, 60*time.Second, 2*time.Second, func() (bool, error) {
+				return namespaceExists(ctx, cfg, prodNS)
+			}); err != nil {
+				t.Fatalf("namespace %s not created: %v", prodNS, err)
+			}
+			// Create sandbox and apply a resource
+			cmd = exec.CommandContext(ctx, "chorister", "sandbox", "create",
+				"--domain", domain, "--name", sandboxName, "--app", appName)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("sandbox create: %v: %s", err, out)
+			}
+			return ctx
+		}).
+		Assess("promotion with 0 approvals does not modify prod", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Create a ChoPromotionRequest via CLI
+			cmd := exec.CommandContext(ctx, "chorister", "promote",
+				"--domain", domain, "--sandbox", sandboxName, "--app", appName)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("promote failed: %v: %s", err, out)
+			}
+			// Do NOT approve — wait briefly and verify production is unchanged
+			time.Sleep(5 * time.Second)
+			var deps appsv1.DeploymentList
+			if err := cfg.Client().Resources(prodNS).List(ctx, &deps); err != nil {
+				t.Fatalf("list deployments in prod: %v", err)
+			}
+			if len(deps.Items) > 0 {
+				t.Fatal("production namespace has Deployments despite 0 approvals")
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cleanupApp(ctx, t, appName)
 			return ctx
 		}).
 		Feature()
@@ -67,12 +113,48 @@ func TestE2E_PromotionRequiresApproval(t *testing.T) {
 }
 
 func TestE2E_ProductionRBACViewOnly(t *testing.T) {
-	feature := features.New("production RBAC view-only").
-		Assess("developer SA cannot create resources in production", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			t.Skip("awaiting Phase 9: RBAC reconciler + production lockdown")
+	const appName = "e2e-rbacview"
+	const domain = "payments"
+	prodNS := appName + "-" + domain
 
-			// Use a developer ServiceAccount to attempt creating a Deployment in prod namespace
-			// Assert: forbidden
+	feature := features.New("production RBAC view-only").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cmd := exec.CommandContext(ctx, "chorister", "admin", "app", "create", appName,
+				"--owners", "test@chorister.dev",
+				"--compliance", "essential",
+				"--domains", domain)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed to create app: %v: %s", err, out)
+			}
+			if err := waitForCondition(ctx, 60*time.Second, 2*time.Second, func() (bool, error) {
+				return namespaceExists(ctx, cfg, prodNS)
+			}); err != nil {
+				t.Fatalf("namespace %s not created: %v", prodNS, err)
+			}
+			// Add developer member
+			cmd = exec.CommandContext(ctx, "chorister", "admin", "member", "add",
+				"--app", appName, "--domain", domain,
+				"--identity", "devuser@chorister.dev", "--role", "developer",
+				"--expires-at", "2030-01-01T00:00:00Z")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Logf("member add: %v: %s (non-fatal)", err, out)
+			}
+			return ctx
+		}).
+		Assess("developer SA cannot create resources in production", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Use kubectl auth can-i to verify the developer cannot create in prod
+			cmd := exec.CommandContext(ctx, "kubectl", "auth", "can-i", "create", "deployments",
+				"--namespace", prodNS, "--as", "devuser@chorister.dev")
+			out, _ := cmd.CombinedOutput()
+			result := strings.TrimSpace(string(out))
+			if result != "no" {
+				t.Fatalf("expected developer cannot create deployments in production, got: %s", result)
+			}
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cleanupApp(ctx, t, appName)
 			return ctx
 		}).
 		Feature()

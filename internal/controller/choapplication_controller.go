@@ -60,6 +60,7 @@ type ChoApplicationReconciler struct {
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=limitranges,verbs=get;list;watch;create;update;patch;delete
@@ -405,13 +406,19 @@ func uniqueImagesFromComputes(computes []choristerv1alpha1.ChoCompute) []string 
 func (r *ChoApplicationReconciler) ensureNamespace(ctx context.Context, app *choristerv1alpha1.ChoApplication, domainName, nsName string) error {
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: nsName}, ns)
+
+	psaLevel := psaLevelForCompliance(app.Spec.Policy.Compliance)
+
 	if errors.IsNotFound(err) {
 		ns = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: nsName,
 				Labels: map[string]string{
-					labelApplication: app.Name,
-					labelDomain:      domainName,
+					labelApplication:                     app.Name,
+					labelDomain:                          domainName,
+					"pod-security.kubernetes.io/enforce": psaLevel,
+					"pod-security.kubernetes.io/audit":   psaLevel,
+					"pod-security.kubernetes.io/warn":    psaLevel,
 				},
 			},
 		}
@@ -426,18 +433,36 @@ func (r *ChoApplicationReconciler) ensureNamespace(ctx context.Context, app *cho
 		ns.Labels = make(map[string]string)
 	}
 	needsUpdate := false
-	if ns.Labels[labelApplication] != app.Name {
-		ns.Labels[labelApplication] = app.Name
-		needsUpdate = true
-	}
-	if ns.Labels[labelDomain] != domainName {
-		ns.Labels[labelDomain] = domainName
-		needsUpdate = true
+	for k, v := range map[string]string{
+		labelApplication:                     app.Name,
+		labelDomain:                          domainName,
+		"pod-security.kubernetes.io/enforce": psaLevel,
+		"pod-security.kubernetes.io/audit":   psaLevel,
+		"pod-security.kubernetes.io/warn":    psaLevel,
+	} {
+		if ns.Labels[k] != v {
+			ns.Labels[k] = v
+			needsUpdate = true
+		}
 	}
 	if needsUpdate {
 		return r.Update(ctx, ns)
 	}
 	return nil
+}
+
+// psaLevelForCompliance maps a compliance profile to a Pod Security Admission level.
+func psaLevelForCompliance(compliance string) string {
+	switch compliance {
+	case "regulated":
+		return "restricted"
+	case "standard":
+		return "restricted"
+	case "essential":
+		return "restricted"
+	default:
+		return "baseline"
+	}
 }
 
 // ensureDefaultDenyNetworkPolicy creates a deny-all ingress+egress NetworkPolicy

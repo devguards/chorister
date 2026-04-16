@@ -10,12 +10,12 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-chorister-chorister-dev-v1alpha1-choapplication
+      path: /validate-chorister-dev-v1alpha1-choapplication
   failurePolicy: Fail
   name: vchoapplication-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - chorister.chorister.dev
+    - chorister.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -30,12 +30,32 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-chorister-chorister-dev-v1alpha1-chonetwork
+      path: /validate-chorister-dev-v1alpha1-chodomainmembership
+  failurePolicy: Fail
+  name: vchodomainmembership-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chodomainmemberships
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chonetwork
   failurePolicy: Fail
   name: vchonetwork-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - chorister.chorister.dev
+    - chorister.dev
     apiVersions:
     - v1alpha1
     operations:
@@ -43,4 +63,24 @@ webhooks:
     - UPDATE
     resources:
     - chonetworks
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chopromotionrequest
+  failurePolicy: Fail
+  name: vchopromotionrequest-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chopromotionrequests
   sideEffects: None

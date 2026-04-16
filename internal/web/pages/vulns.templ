@@ -1,0 +1,114 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/chorister-dev/chorister/internal/query"
+)
+
+// VulnsPage lists all ChoVulnerabilityReports.
+templ VulnsPage(vulns []query.VulnReportInfo, queryErr error) {
+	@Layout("Vulnerabilities", "vulns") {
+		@errBanner(queryErr)
+		<div class="space-y-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-base font-bold text-gray-900">Vulnerability Reports</h2>
+					<p class="text-xs text-gray-500 mt-0.5">{ fmt.Sprint(len(vulns)) } report(s)</p>
+				</div>
+				<a
+					href="/vulns?min_severity=critical"
+					class="text-xs font-medium text-red-600 border border-red-200 rounded-md px-3 py-1.5 hover:bg-red-50 transition-colors"
+				>🔴 Critical only</a>
+			</div>
+			<!-- Summary cards -->
+			if len(vulns) > 0 {
+				<div class="grid grid-cols-3 gap-4">
+					<div class="bg-white border border-gray-200 rounded-lg p-4">
+						<div class="text-xs text-gray-500 mb-1">Total reports</div>
+						<div class="text-2xl font-bold text-gray-900">{ fmt.Sprint(len(vulns)) }</div>
+					</div>
+					<div class="bg-white border border-red-200 rounded-lg p-4">
+						<div class="text-xs text-red-500 mb-1">Critical findings</div>
+						<div class="text-2xl font-bold text-red-700">{ fmt.Sprint(totalCritical(vulns)) }</div>
+					</div>
+					<div class="bg-white border border-gray-200 rounded-lg p-4">
+						<div class="text-xs text-gray-500 mb-1">High findings</div>
+						<div class="text-2xl font-bold text-amber-600">{ fmt.Sprint(totalHigh(vulns)) }</div>
+					</div>
+				</div>
+			}
+			<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+				<table class="w-full text-sm">
+					<thead class="bg-gray-50 border-b border-gray-200">
+						<tr>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">App / Domain</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Scanner</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Critical</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">High</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Scanned at</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-gray-100">
+						for _, v := range vulns {
+							@vulnRow(v)
+						}
+						if len(vulns) == 0 {
+							@emptyState(6, "No vulnerability reports found. Scans run automatically when compliance ≥ standard.")
+						}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	}
+}
+
+templ vulnRow(v query.VulnReportInfo) {
+	<tr class={ templ.KV("bg-red-50", v.CriticalCount > 0), "hover:bg-red-100", templ.KV("hover:bg-gray-50", v.CriticalCount == 0), "transition-colors" }>
+		<td class="px-4 py-3">
+			<div class="font-medium text-gray-900">{ v.Application }</div>
+			<div class="text-xs text-gray-500">{ v.Domain }</div>
+		</td>
+		<td class="px-4 py-3 text-gray-600 text-xs">{ v.Scanner }</td>
+		<td class="px-4 py-3 tabular-nums">
+			if v.CriticalCount > 0 {
+				<span class="font-bold text-red-700">{ fmt.Sprint(v.CriticalCount) }</span>
+			} else {
+				<span class="text-gray-400">0</span>
+			}
+		</td>
+		<td class="px-4 py-3 tabular-nums">
+			if v.HighCount > 0 {
+				<span class="font-semibold text-amber-600">{ fmt.Sprint(v.HighCount) }</span>
+			} else {
+				<span class="text-gray-400">0</span>
+			}
+		</td>
+		<td class="px-4 py-3 text-gray-600 text-xs">
+			if v.ScannedAt != nil {
+				{ v.ScannedAt.Format("2006-01-02 15:04") }
+			} else {
+				<span class="text-gray-400">never</span>
+			}
+		</td>
+		<td class="px-4 py-3">
+			@phaseBadge(v.Phase)
+		</td>
+	</tr>
+}
+
+func totalCritical(vulns []query.VulnReportInfo) int {
+	n := 0
+	for _, v := range vulns {
+		n += v.CriticalCount
+	}
+	return n
+}
+
+func totalHigh(vulns []query.VulnReportInfo) int {
+	n := 0
+	for _, v := range vulns {
+		n += v.HighCount
+	}
+	return n
+}

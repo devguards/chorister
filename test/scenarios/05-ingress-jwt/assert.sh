@@ -41,8 +41,10 @@ setup() {
   kctl apply -f "${SCRIPT_DIR}/fixtures/mock-jwks.yaml"
   wait_for_deployment_ready "$CHO_SYSTEM" "mock-jwks" 60
 
-  # STUB: use kubectl to apply app
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "${APP_NAME}" \
+    --owners platform-admin@example.com \
+    --compliance essential \
+    --domains payments
   wait_for_namespace "$PAYMENTS_NS" 60
 
   # Apply ChoNetwork with JWT auth

@@ -19,12 +19,14 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	stderrors "errors"
 	"fmt"
 	"math/big"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,6 +49,9 @@ var (
 	sgInstanceProfileGVK = schema.GroupVersionKind{
 		Group: "stackgres.io", Version: "v1", Kind: "SGInstanceProfile",
 	}
+	sgBackupGVK = schema.GroupVersionKind{
+		Group: "stackgres.io", Version: "v1", Kind: "SGBackup",
+	}
 )
 
 // ChoDatabaseReconciler reconciles a ChoDatabase object
@@ -64,6 +69,7 @@ type ChoDatabaseReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=stackgres.io,resources=sgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=stackgres.io,resources=sginstanceprofiles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=stackgres.io,resources=sgbackups,verbs=get;list;watch;create
 
 // Reconcile moves the cluster state to match the desired ChoDatabase spec.
 func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -179,14 +185,51 @@ func (r *ChoDatabaseReconciler) handleDeletion(ctx context.Context, db *choriste
 		return ctrl.Result{}, r.Update(ctx, db)
 	}
 
-	// Production: record final snapshot reference (placeholder)
+	// Production: trigger StackGres SGBackup before removing finalizer.
+	sgClusterName := fmt.Sprintf("%s-%s", db.Spec.Domain, db.Name)
 	if db.Status.FinalSnapshotRef == "" {
-		db.Status.FinalSnapshotRef = fmt.Sprintf("snapshot-%s-%s", db.Name, time.Now().Format("20060102-150405"))
+		backupName := fmt.Sprintf("final-%s-%s", db.Name, time.Now().Format("20060102-150405"))
+		sgBackup := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "stackgres.io/v1",
+				"kind":       "SGBackup",
+				"metadata": map[string]interface{}{
+					"name":      backupName,
+					"namespace": db.Namespace,
+				},
+				"spec": map[string]interface{}{
+					"sgCluster":        sgClusterName,
+					"managedLifecycle": false,
+				},
+			},
+		}
+		if err := r.Create(ctx, sgBackup); err != nil {
+			// If the SGBackup already exists or SGCluster is gone, record the name anyway.
+			// If StackGres CRDs are not installed, skip the backup gracefully.
+			if !errors.IsAlreadyExists(err) && !errors.IsNotFound(err) && !runtime.IsNotRegisteredError(err) && !isNoMatchError(err) {
+				return ctrl.Result{}, fmt.Errorf("creating final SGBackup: %w", err)
+			}
+		}
+		db.Status.FinalSnapshotRef = backupName
 		if err := r.Status().Update(ctx, db); err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("Recorded final snapshot for ChoDatabase", "name", db.Name, "snapshot", db.Status.FinalSnapshotRef)
+		log.Info("Triggered final SGBackup for ChoDatabase", "name", db.Name, "backup", backupName)
+		// Requeue to check backup completion before removing finalizer.
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
+
+	// Check if backup is complete before removing finalizer.
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(sgBackupGVK)
+	if err := r.Get(ctx, types.NamespacedName{Name: db.Status.FinalSnapshotRef, Namespace: db.Namespace}, existing); err == nil {
+		phase, _, _ := unstructured.NestedString(existing.Object, "status", "process", "status")
+		if phase != "Completed" && phase != "Failed" {
+			log.Info("Waiting for final SGBackup to complete", "backup", db.Status.FinalSnapshotRef, "phase", phase)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+	}
+	// Backup completed, not found, or failed — proceed with deletion.
 
 	controllerutil.RemoveFinalizer(db, dbFinalizerName)
 	return ctrl.Result{}, r.Update(ctx, db)
@@ -234,6 +277,15 @@ func (r *ChoDatabaseReconciler) handleArchived(ctx context.Context, db *choriste
 		}
 	}
 	return ctrl.Result{RequeueAfter: time.Hour}, nil
+}
+
+// isNoMatchError returns true if the error indicates no matching CRD was found.
+func isNoMatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var noMatch *meta.NoKindMatchError
+	return stderrors.As(err, &noMatch)
 }
 
 // isInSandbox returns true if the namespace has a sandbox label.

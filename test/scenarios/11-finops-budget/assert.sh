@@ -17,10 +17,12 @@ SANDBOX_NS_UNDER="${APP_NAME}-${DOMAIN}-sandbox-${SANDBOX_UNDER}"
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented — use kubectl
-  # Apply a ChoApplication with very tight sandbox budget and ChoCluster with finops rates
+  # Apply ChoCluster with finops rates and create application with tight sandbox budget
   kctl apply -f "${SCRIPT_DIR}/fixtures/cho-cluster.yaml" 2>/dev/null || true
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "$APP_NAME" \
+    --owners test@chorister.dev \
+    --compliance essential \
+    --domains "$DOMAIN"
   wait_for_namespace "${APP_NAME}-${DOMAIN}" 60
 }
 
@@ -58,7 +60,7 @@ assert_sandbox_budget_enforced() {
     if [[ "$cond" == "True" ]]; then
       _assert_pass "BudgetExceeded condition set on sandbox"
     else
-      echo "[SKIP] FinOps budget enforcement not yet implemented (controller stub)"
+      _assert_fail "BudgetExceeded condition set on sandbox" "condition not found or not True"
     fi
   fi
 
@@ -107,7 +109,7 @@ assert_budget_alert_threshold() {
   if [[ "$cond" == "True" ]]; then
     _assert_pass "BudgetAlert condition set on ChoApplication"
   else
-    echo "[SKIP] BudgetAlert condition not set (FinOps controller may be a stub)"
+    _assert_fail "BudgetAlert condition set on ChoApplication" "condition not found or not True"
   fi
 }
 
@@ -146,7 +148,7 @@ assert_idle_auto_destroy() {
     fi
     sleep 5; elapsed=$((elapsed + 5))
   done
-  echo "[SKIP] Idle sandbox auto-destroy not triggered within 30s (controller stub)"
+  _assert_fail "Idle sandbox namespace ${idle_ns} was automatically deleted" "still exists after 30s"
 
   # Cleanup
   cho sandbox destroy --domain "$DOMAIN" --name "$idle_sandbox" --app "$APP_NAME" \
@@ -158,8 +160,7 @@ assert_idle_auto_destroy() {
 cleanup() {
   cho sandbox destroy --domain "$DOMAIN" --name "$SANDBOX_UNDER" --app "$APP_NAME" \
     2>/dev/null || true
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-application.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
+  cho admin app delete "$APP_NAME" --confirm 2>/dev/null || true
   kctl delete -f "${SCRIPT_DIR}/fixtures/cho-cluster.yaml" \
     --ignore-not-found=true 2>/dev/null || true
 }

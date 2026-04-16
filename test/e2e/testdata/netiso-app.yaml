@@ -1,0 +1,23 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoApplication
+metadata:
+  name: e2e-netiso
+  namespace: cho-system
+spec:
+  owners:
+    - test@chorister.dev
+  policy:
+    compliance: essential
+    promotion:
+      requiredApprovers: 1
+      allowedRoles: ["org-admin"]
+  domains:
+    - name: payments
+      consumes:
+        - domain: auth
+          services: ["echo-api"]
+          port: 8080
+    - name: auth
+      supplies:
+        services: ["echo-api"]
+        port: 8080

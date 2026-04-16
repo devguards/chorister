@@ -1,0 +1,146 @@
+package pages
+
+// Layout is the base HTML shell used by every page.
+// It provides the sidebar navigation, top header, and Tailwind CSS via Play CDN.
+// NOTE: The Tailwind Play CDN is development-only. For production, configure the
+// Tailwind CLI build pipeline per https://tailwindcss.com/docs/installation.
+templ Layout(title string, activePage string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title } — Chorister</title>
+			<script src="https://cdn.tailwindcss.com"></script>
+			<script>
+				tailwind.config = {
+					theme: {
+						extend: {
+							colors: {
+								brand: {
+									DEFAULT: '#3d6b4f',
+									light: '#e8f0eb',
+									dark: '#2d5a3a',
+								},
+							},
+						},
+					},
+				}
+			</script>
+			<style>
+				[x-cloak] { display: none !important; }
+				.sse-new { animation: fadeIn 0.4s ease; }
+				@keyframes fadeIn { from { background: #e8f0eb; } to { background: transparent; } }
+			</style>
+		</head>
+		<body class="bg-gray-50 text-gray-900 text-sm antialiased">
+			<div class="flex h-screen overflow-hidden">
+				<!-- Sidebar -->
+				<aside class="w-52 bg-gray-900 text-gray-300 flex flex-col flex-shrink-0 overflow-y-auto">
+					<div class="px-4 pt-5 pb-4 border-b border-gray-800">
+						<div class="flex items-center gap-2">
+							<div class="w-7 h-7 bg-brand rounded-md flex items-center justify-center text-white font-bold text-xs flex-shrink-0">C</div>
+							<div>
+								<div class="text-xs font-bold text-white tracking-wide">CHORISTER</div>
+								<div class="text-xs text-gray-500">Platform</div>
+							</div>
+						</div>
+					</div>
+					<nav class="flex-1 px-2 py-3 space-y-0.5">
+						@sidebarItem("/apps", "📦 Applications", activePage == "apps")
+						@sidebarItem("/sandboxes", "🏖 Sandboxes", activePage == "sandboxes")
+						@sidebarItem("/promotions", "🚀 Promotions", activePage == "promotions")
+						@sidebarItem("/members", "👥 Members", activePage == "members")
+						@sidebarItem("/vulns", "🔍 Vulnerabilities", activePage == "vulns")
+						@sidebarItem("/events", "📡 Live Events", activePage == "events")
+					</nav>
+					<div class="px-4 py-3 border-t border-gray-800">
+						<div class="text-xs text-gray-500">chorister web ui</div>
+					</div>
+				</aside>
+				<!-- Main content -->
+				<div class="flex-1 flex flex-col overflow-hidden">
+					<header class="h-12 bg-white border-b border-gray-200 flex items-center px-5 flex-shrink-0 gap-3">
+						<h1 class="text-sm font-semibold text-gray-900">{ title }</h1>
+					</header>
+					<main class="flex-1 overflow-y-auto p-5">
+						{ children... }
+					</main>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ sidebarItem(href, label string, active bool) {
+	if active {
+		<a
+			href={ templ.URL(href) }
+			class="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-semibold bg-brand text-white"
+		>{ label }</a>
+	} else {
+		<a
+			href={ templ.URL(href) }
+			class="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium text-gray-400 hover:bg-gray-800 hover:text-white transition-colors"
+		>{ label }</a>
+	}
+}
+
+// complianceBadge renders a coloured pill for the compliance level.
+templ complianceBadge(level string) {
+	switch level {
+		case "regulated":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-red-100 text-red-700">regulated</span>
+		case "standard":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-700">standard</span>
+		default:
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-gray-100 text-gray-600">essential</span>
+	}
+}
+
+// phaseBadge renders a coloured pill for a resource phase string.
+templ phaseBadge(phase string) {
+	switch phase {
+		case "Active", "Completed", "Approved":
+			<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">{ phase }</span>
+		case "Pending":
+			<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">{ phase }</span>
+		case "Rejected", "Failed":
+			<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">{ phase }</span>
+		case "Executing":
+			<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">{ phase }</span>
+		default:
+			<span class="inline-flex text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{ phase }</span>
+	}
+}
+
+// sensitivityBadge renders a coloured pill for domain sensitivity.
+templ sensitivityBadge(level string) {
+	switch level {
+		case "restricted":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-red-100 text-red-700">restricted</span>
+		case "confidential":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-700">confidential</span>
+		case "public":
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-green-100 text-green-700">public</span>
+		default:
+			<span class="inline-flex text-xs font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-700">internal</span>
+	}
+}
+
+// errBanner renders an error notice if err != nil.
+templ errBanner(err error) {
+	if err != nil {
+		<div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 flex items-start gap-2">
+			<span class="text-red-500 mt-0.5">⚠</span>
+			<span>Could not load data from Kubernetes: <strong>{ err.Error() }</strong>. Ensure your kubeconfig is set and the cluster is reachable.</span>
+		</div>
+	}
+}
+
+// emptyState renders a placeholder when a table has no rows.
+templ emptyState(colspan int, msg string) {
+	<tr>
+		<td colspan={ intStr(colspan) } class="px-4 py-10 text-center text-gray-400 text-xs">{ msg }</td>
+	</tr>
+}

@@ -1,0 +1,16 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCompute
+metadata:
+  name: api-server
+spec:
+  image: busybox:latest
+  variant: long-running
+  replicas: 1
+  port: 8080
+---
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDatabase
+metadata:
+  name: payments-db
+spec:
+  engine: postgres

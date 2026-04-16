@@ -40,7 +40,7 @@ func testCapacityScheme() *runtime.Scheme {
 func TestQuotaReport_WithResourceQuota(t *testing.T) {
 	s := testCapacityScheme()
 	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", Namespace: query.ControlPlaneNamespace},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
 			Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "essential", Promotion: choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}}},
@@ -88,7 +88,7 @@ func TestQuotaReport_WithResourceQuota(t *testing.T) {
 func TestQuotaReport_NoQuota(t *testing.T) {
 	s := testCapacityScheme()
 	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", Namespace: query.ControlPlaneNamespace},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
 			Policy:  choristerv1alpha1.ApplicationPolicy{Compliance: "essential", Promotion: choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}}},
@@ -142,7 +142,7 @@ func TestQuotaTableReport(t *testing.T) {
 func TestQuotaReport_DomainFilter(t *testing.T) {
 	s := testCapacityScheme()
 	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", Namespace: query.ControlPlaneNamespace},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Domains: []choristerv1alpha1.DomainSpec{
 				{Name: "payments"},

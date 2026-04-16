@@ -48,6 +48,27 @@ spec:
           spec:
             description: ChoClusterSpec defines the desired state of ChoCluster.
             properties:
+              cloudProvider:
+                description: cloudProvider configures the cloud provider plugin for
+                  object storage via kro.
+                properties:
+                  image:
+                    description: image overrides the default cloud provider controller
+                      image.
+                    type: string
+                  provider:
+                    description: provider is the cloud provider.
+                    enum:
+                    - aws
+                    - gcp
+                    - azure
+                    type: string
+                  region:
+                    description: region is the default region for cloud resources.
+                    type: string
+                required:
+                - provider
+                type: object
               controllerRevision:
                 description: controllerRevision is the current stable controller revision
                   name.

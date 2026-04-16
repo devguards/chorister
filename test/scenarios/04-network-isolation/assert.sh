@@ -32,7 +32,7 @@ curl_from_pod() {
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create is not implemented — use kubectl
+  # CLI admin app create does not support consumes/supplies — use kubectl
   kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
   wait_for_namespace "$PAYMENTS_NS" 60
   wait_for_namespace "$AUTH_NS" 60

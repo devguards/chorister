@@ -45,7 +45,7 @@ func SetupChoNetworkWebhookWithManager(mgr ctrl.Manager) error {
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
-// +kubebuilder:webhook:path=/validate-chorister-chorister-dev-v1alpha1-chonetwork,mutating=false,failurePolicy=fail,sideEffects=None,groups=chorister.chorister.dev,resources=chonetworks,verbs=create;update,versions=v1alpha1,name=vchonetwork-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-chorister-dev-v1alpha1-chonetwork,mutating=false,failurePolicy=fail,sideEffects=None,groups=chorister.dev,resources=chonetworks,verbs=create;update,versions=v1alpha1,name=vchonetwork-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ChoNetworkCustomValidator struct is responsible for validating the ChoNetwork resource
 // when it is created, updated, or deleted.
@@ -96,7 +96,7 @@ func validateChoNetwork(network *choristerv1alpha1.ChoNetwork) error {
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   "chorister.chorister.dev",
+		Group:   "chorister.dev",
 		Version: "v1alpha1",
 		Kind:    "ChoNetwork",
 	}

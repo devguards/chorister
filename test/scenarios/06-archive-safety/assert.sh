@@ -18,7 +18,7 @@ DB_CREDENTIALS_SECRET="${DOMAIN}--database--ledger-credentials"
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented
+  # CLI admin app create does not support archive.retentionDays — use kubectl
   kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
   wait_for_namespace "$PROD_NS" 60
 
@@ -27,9 +27,10 @@ setup() {
   cho sandbox create --domain "$DOMAIN" --name "$SANDBOX_NAME" --app "$APP_NAME"
   wait_for_namespace "$SANDBOX_NS" 60
 
-  # STUB: chorister apply not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-database-ledger.yaml" -n "$SANDBOX_NS"
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-compute-api.yaml" -n "$SANDBOX_NS"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-database-ledger.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-compute-api.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 
   # Promote to production (requiredApprovers: 1 → needs approval)
   cho promote --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"

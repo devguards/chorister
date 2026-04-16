@@ -97,6 +97,7 @@ func testApp(name string, domains []choristerv1alpha1.DomainSpec, phase string, 
 	return &choristerv1alpha1.ChoApplication{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
+			Namespace:         controlPlaneNamespace,
 			CreationTimestamp: metav1.Now(),
 		},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
@@ -264,7 +265,7 @@ func TestCLI_ExportOutputsValidYAML(t *testing.T) {
 	s := testScheme()
 	ns := "myproduct-payments"
 	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", CreationTimestamp: metav1.Now()},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", Namespace: controlPlaneNamespace, CreationTimestamp: metav1.Now()},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners:  []string{"admin@example.com"},
 			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},

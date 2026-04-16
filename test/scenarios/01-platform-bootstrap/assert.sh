@@ -78,9 +78,10 @@ assert_app_list_empty() {
 # ── 01-assert-app-create ─────────────────────────────────────────────────────
 
 assert_app_create() {
-  # CLI 'admin app create' is a stub — use kubectl apply instead
-  # STUB: replace with CLI call when implemented
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "${APP_NAME}" \
+    --owners platform-admin@example.com \
+    --compliance essential \
+    --domains payments,auth
 
   # Wait for controller to create domain namespaces
   wait_for_namespace "${APP_NAME}-payments" 60 \

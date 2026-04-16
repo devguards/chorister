@@ -19,18 +19,23 @@ CACHE_SECRET="${DOMAIN}--cache--session-credentials"
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "${APP_NAME}" \
+    --owners platform-admin@example.com \
+    --compliance essential \
+    --domains "${DOMAIN}"
 
   # Create sandbox for testing
   cho sandbox create --domain "$DOMAIN" --name "$SANDBOX_NAME" --app "$APP_NAME"
   wait_for_namespace "$SANDBOX_NS" 60
 
-  # STUB: chorister apply not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-compute.yaml" -n "$SANDBOX_NS"
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-database.yaml" -n "$SANDBOX_NS"
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-queue.yaml" -n "$SANDBOX_NS"
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-cache.yaml" -n "$SANDBOX_NS"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-compute.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-database.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-queue.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-cache.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 }
 
 # ── 07-assert-compute-running ─────────────────────────────────────────────────

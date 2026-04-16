@@ -23,21 +23,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ListApplications returns all ChoApplications in the cluster.
+// ControlPlaneNamespace is the well-known namespace where platform-level
+// resources (ChoApplication, ChoCluster) are stored.
+const ControlPlaneNamespace = "cho-system"
+
+// ListApplications returns all ChoApplications in the control-plane namespace.
 func (q *Querier) ListApplications(ctx context.Context) ([]choristerv1alpha1.ChoApplication, error) {
 	var list choristerv1alpha1.ChoApplicationList
-	if err := q.list(ctx, &list); err != nil {
-		return nil, wrapError("ChoApplication", "", "", err)
+	if err := q.list(ctx, &list, client.InNamespace(ControlPlaneNamespace)); err != nil {
+		return nil, wrapError("ChoApplication", "", ControlPlaneNamespace, err)
 	}
 	return list.Items, nil
 }
 
-// GetApplication returns a single ChoApplication by name.
-// ChoApplication is cluster-scoped, so no namespace is needed.
+// GetApplication returns a single ChoApplication by name from the control-plane namespace.
 func (q *Querier) GetApplication(ctx context.Context, name string) (*choristerv1alpha1.ChoApplication, error) {
 	var app choristerv1alpha1.ChoApplication
-	if err := q.get(ctx, client.ObjectKey{Name: name}, &app); err != nil {
-		return nil, wrapError("ChoApplication", name, "", err)
+	if err := q.get(ctx, client.ObjectKey{Name: name, Namespace: ControlPlaneNamespace}, &app); err != nil {
+		return nil, wrapError("ChoApplication", name, ControlPlaneNamespace, err)
 	}
 	return &app, nil
 }

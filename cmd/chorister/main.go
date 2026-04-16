@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -94,6 +96,7 @@ It provides sandbox-first workflow, deterministic promotion, and compliance buil
 		newVersionCmd(),
 		newSetupCmd(),
 		newLoginCmd(),
+		newServeCmd(),
 		newApplyCmd(),
 		newSandboxCmd(),
 		newDiffCmd(),
@@ -212,8 +215,9 @@ func newSetupCmd() *cobra.Command {
 			// Step 5: Wait for controller readiness if requested.
 			if wait && image != "" {
 				fmt.Fprintln(out, "Waiting for controller to become ready...")
-				// In a real implementation this would poll the Deployment status.
-				// For now, we report success — the --wait flag is wired for future use.
+				if err := waitForDeployment(cmd.Context(), c, controlPlaneNamespace, "chorister-controller-manager", 120*time.Second, out); err != nil {
+					return fmt.Errorf("waiting for controller: %w", err)
+				}
 				fmt.Fprintln(out, "Controller is ready")
 			}
 
@@ -367,6 +371,48 @@ func setupControllerDeployment(image string) *unstructured.Unstructured {
 		},
 	}
 	return dep
+}
+
+// waitForDeployment polls a Deployment until its ready replicas match the desired replicas.
+func waitForDeployment(ctx context.Context, c client.Client, namespace, name string, timeout time.Duration, out io.Writer) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		dep := &unstructured.Unstructured{}
+		dep.SetGroupVersionKind(deploymentGVK())
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep); err != nil {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timeout waiting for Deployment %s/%s: %w", namespace, name, err)
+			}
+			// Deployment may not exist yet; wait.
+		} else {
+			replicas, _, _ := unstructured.NestedInt64(dep.Object, "spec", "replicas")
+			if replicas == 0 {
+				replicas = 1
+			}
+			readyReplicas, _, _ := unstructured.NestedInt64(dep.Object, "status", "readyReplicas")
+			if readyReplicas >= replicas {
+				return nil
+			}
+			fmt.Fprintf(out, "  %d/%d replicas ready...\n", readyReplicas, replicas)
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout after %s waiting for Deployment %s/%s to become ready", timeout, namespace, name)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func deploymentGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 }
 
 // --- login ---
@@ -1255,6 +1301,16 @@ Use --rollback to revert production to its previous compiled state. Rollback and
 				}
 			}
 
+			// Check if domain is isolated
+			choApp, err := q.GetApplication(cmd.Context(), app)
+			if err != nil {
+				return err
+			}
+			isolateKey := fmt.Sprintf("chorister.dev/isolate-%s", domain)
+			if choApp.Annotations != nil && choApp.Annotations[isolateKey] == "true" {
+				return fmt.Errorf("domain %s is isolated — promotions are blocked during isolation", domain)
+			}
+
 			pr := &choristerv1alpha1.ChoPromotionRequest{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: fmt.Sprintf("%s-%s-", app, domain),
@@ -1521,7 +1577,8 @@ func newAdminAppCreateCmd() *cobra.Command {
 
 			app := &choristerv1alpha1.ChoApplication{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: name,
+					Name:      name,
+					Namespace: controlPlaneNamespace,
 				},
 				Spec: choristerv1alpha1.ChoApplicationSpec{
 					Owners: owners,
@@ -1790,7 +1847,7 @@ func newAdminDomainCreateCmd() *cobra.Command {
 			}
 
 			app := &choristerv1alpha1.ChoApplication{}
-			if err := c.Get(cmd.Context(), types.NamespacedName{Name: appName}, app); err != nil {
+			if err := c.Get(cmd.Context(), types.NamespacedName{Name: appName, Namespace: controlPlaneNamespace}, app); err != nil {
 				return fmt.Errorf("get ChoApplication %s: %w", appName, err)
 			}
 
@@ -2360,13 +2417,15 @@ func newAdminComplianceStatusCmd() *cobra.Command {
 
 func newAdminIsolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "isolate [domain]",
+		Use:     "isolate",
 		Short:   "Isolate a domain (tighten NetworkPolicy, freeze promotions)",
 		Long:    `Sets the chorister.dev/isolate-<domain>=true annotation on the ChoApplication. The controller responds by tightening network policies and blocking new promotion requests for the domain. Use during incident response.`,
-		Example: `  chorister admin isolate payments --app myproduct`,
-		Args:    cobra.ExactArgs(1),
+		Example: `  chorister admin isolate --domain payments --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			domainName := args[0]
+			domainName, _ := cmd.Flags().GetString("domain")
+			if domainName == "" {
+				return fmt.Errorf("--domain is required")
+			}
 			app, _ := cmd.Flags().GetString("app")
 			if app == "" {
 				return fmt.Errorf("--app is required")
@@ -2399,18 +2458,21 @@ func newAdminIsolateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().String("domain", "", "Domain name to isolate")
 	return cmd
 }
 
 func newAdminUnisolateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "unisolate [domain]",
+		Use:     "unisolate",
 		Short:   "Restore a previously isolated domain",
 		Long:    `Removes the chorister.dev/isolate-<domain> annotation, reverting network policies to their normal state and unblocking promotion requests.`,
-		Example: `  chorister admin unisolate payments --app myproduct`,
-		Args:    cobra.ExactArgs(1),
+		Example: `  chorister admin unisolate --domain payments --app myproduct`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			domainName := args[0]
+			domainName, _ := cmd.Flags().GetString("domain")
+			if domainName == "" {
+				return fmt.Errorf("--domain is required")
+			}
 			app, _ := cmd.Flags().GetString("app")
 			if app == "" {
 				return fmt.Errorf("--app is required")
@@ -2445,6 +2507,7 @@ func newAdminUnisolateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("app", "", "Application name")
+	cmd.Flags().String("domain", "", "Domain name to restore")
 	return cmd
 }
 

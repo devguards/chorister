@@ -93,6 +93,7 @@ func newTestApp(name string, domains []choristerv1alpha1.DomainSpec, phase strin
 	return &choristerv1alpha1.ChoApplication{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
+			Namespace:         ControlPlaneNamespace,
 			CreationTimestamp: metav1.Now(),
 		},
 		Spec: choristerv1alpha1.ChoApplicationSpec{

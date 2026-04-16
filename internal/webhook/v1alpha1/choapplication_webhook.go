@@ -45,7 +45,7 @@ func SetupChoApplicationWebhookWithManager(mgr ctrl.Manager) error {
 
 // TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
-// +kubebuilder:webhook:path=/validate-chorister-chorister-dev-v1alpha1-choapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=chorister.chorister.dev,resources=choapplications,verbs=create;update,versions=v1alpha1,name=vchoapplication-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-chorister-dev-v1alpha1-choapplication,mutating=false,failurePolicy=fail,sideEffects=None,groups=chorister.dev,resources=choapplications,verbs=create;update,versions=v1alpha1,name=vchoapplication-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // ChoApplicationCustomValidator struct is responsible for validating the ChoApplication resource
 // when it is created, updated, or deleted.
@@ -108,7 +108,7 @@ func validateChoApplication(app *choristerv1alpha1.ChoApplication) error {
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   "chorister.chorister.dev",
+		Group:   "chorister.dev",
 		Version: "v1alpha1",
 		Kind:    "ChoApplication",
 	}

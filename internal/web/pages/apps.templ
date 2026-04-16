@@ -1,0 +1,70 @@
+package pages
+
+import (
+	"fmt"
+	v1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+)
+
+// AppsPage lists all ChoApplications.
+templ AppsPage(apps []v1alpha1.ChoApplication, queryErr error) {
+	@Layout("Applications", "apps") {
+		@errBanner(queryErr)
+		<div class="space-y-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-base font-bold text-gray-900">Applications</h2>
+					<p class="text-xs text-gray-500 mt-0.5">{ fmt.Sprint(len(apps)) } application(s) registered in cho-system</p>
+				</div>
+			</div>
+			<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+				<table class="w-full text-sm">
+					<thead class="bg-gray-50 border-b border-gray-200">
+						<tr>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Name</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Compliance</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Domains</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Approvers required</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">HA strategy</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Phase</th>
+							<th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide"></th>
+						</tr>
+					</thead>
+					<tbody class="divide-y divide-gray-100">
+						for _, app := range apps {
+							@appRow(app)
+						}
+						if len(apps) == 0 {
+							@emptyState(7, "No applications found. Run: chorister admin app create --name <app> --compliance essential")
+						}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	}
+}
+
+templ appRow(app v1alpha1.ChoApplication) {
+	<tr class="hover:bg-gray-50 transition-colors">
+		<td class="px-4 py-3 font-semibold">
+			<a href={ templ.URL("/apps/" + app.Name) } class="text-brand hover:underline">{ app.Name }</a>
+		</td>
+		<td class="px-4 py-3">
+			@complianceBadge(app.Spec.Policy.Compliance)
+		</td>
+		<td class="px-4 py-3 text-gray-600 tabular-nums">{ fmt.Sprint(len(app.Spec.Domains)) }</td>
+		<td class="px-4 py-3 text-gray-600 tabular-nums">{ fmt.Sprint(app.Spec.Policy.Promotion.RequiredApprovers) }</td>
+		<td class="px-4 py-3 text-gray-600">
+			if app.Spec.Policy.HA != nil {
+				{ app.Spec.Policy.HA.Strategy }
+			} else {
+				single-cluster
+			}
+		</td>
+		<td class="px-4 py-3">
+			@phaseBadge(app.Status.Phase)
+		</td>
+		<td class="px-4 py-3 text-right">
+			<a href={ templ.URL("/apps/" + app.Name) } class="text-xs font-medium text-brand hover:underline">View →</a>
+		</td>
+	</tr>
+}

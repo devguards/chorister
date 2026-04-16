@@ -34,8 +34,10 @@ curl_from_pod() {
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "$APP_NAME" \
+    --owners test@chorister.dev \
+    --compliance essential \
+    --domains "${DOMAIN},auth"
   wait_for_namespace "$PROD_NS" 60
   wait_for_namespace "$OTHER_NS" 60
 
@@ -82,7 +84,7 @@ assert_crash_loop_flags_degraded() {
   if [[ "$cond" == "True" ]]; then
     _assert_pass "ChoApplication status shows Degraded condition"
   else
-    echo "[SKIP] ChoApplication Degraded condition not set (controller may be a stub)"
+    _assert_fail "ChoApplication status shows Degraded condition" "condition not set or not True"
   fi
 }
 
@@ -101,7 +103,7 @@ assert_isolate_freezes_promotions() {
   if [[ "$isolated" == "true" ]]; then
     _assert_pass "ChoApplication status shows isolated=true"
   else
-    echo "[SKIP] isolation status not set (admin isolate may be partially implemented)"
+    _assert_fail "ChoApplication status shows isolated=true" "got: ${isolated}"
   fi
 
   # Attempt to promote — should be rejected
@@ -116,7 +118,7 @@ assert_isolate_freezes_promotions() {
   if [[ "$promote_rc" -ne 0 ]] || echo "$promote_out" | grep -qi "isolat\|blocked\|reject"; then
     _assert_pass "Promotion rejected while domain is isolated"
   else
-    echo "[SKIP] Promotion not blocked during isolation (controller stub)"
+    _assert_fail "Promotion rejected while domain is isolated" "output: ${promote_out}"
   fi
 }
 
@@ -156,7 +158,7 @@ assert_unisolate_restores() {
   if [[ "$isolated" != "true" ]]; then
     _assert_pass "ChoApplication isolation cleared after unisolate"
   else
-    echo "[SKIP] Isolation not cleared (admin unisolate may be partially implemented)"
+    _assert_fail "ChoApplication isolation cleared after unisolate" "still isolated"
   fi
 
   # Assert cross-domain traffic resumes
@@ -176,7 +178,7 @@ assert_unisolate_restores() {
   if [[ "$promote_rc" -eq 0 ]]; then
     _assert_pass "Promotions accepted after unisolate"
   else
-    echo "[SKIP] Promotion after unisolate failed (controller stub or sandbox missing)"
+    _assert_fail "Promotions accepted after unisolate" "exit code: ${promote_rc}"
   fi
 }
 
@@ -185,8 +187,7 @@ assert_unisolate_restores() {
 cleanup() {
   cho sandbox destroy --domain "$DOMAIN" --name "$SANDBOX_NAME" --app "$APP_NAME" \
     2>/dev/null || true
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-application.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
+  cho admin app delete "$APP_NAME" --confirm 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────

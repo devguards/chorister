@@ -115,6 +115,13 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// Phase P3.4: Reconcile cloud provider plugin for object storage
+	if cluster.Spec.CloudProvider != nil {
+		if err := r.reconcileCloudProvider(ctx, cluster); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Phase 11.1: Reconcile observability stack
 	if err := r.reconcileObservability(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
@@ -255,6 +262,49 @@ func (r *ChoClusterReconciler) reconcileOperators(ctx context.Context, cluster *
 		log.Info("Operator reconciled", "operator", def.name)
 	}
 
+	return nil
+}
+
+// defaultCloudProviderImages maps provider to default controller image.
+var defaultCloudProviderImages = map[string]string{
+	"aws":   "public.ecr.aws/aws-controllers-k8s/s3-controller:v1.0.17",
+	"gcp":   "gcr.io/config-connector/operator:latest",
+	"azure": "mcr.microsoft.com/aks/aso/controller:v2.10.0",
+}
+
+// reconcileCloudProvider deploys the cloud provider controller for object storage.
+func (r *ChoClusterReconciler) reconcileCloudProvider(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
+	log := logf.FromContext(ctx)
+	cp := cluster.Spec.CloudProvider
+
+	image := cp.Image
+	if image == "" {
+		var ok bool
+		image, ok = defaultCloudProviderImages[cp.Provider]
+		if !ok {
+			return fmt.Errorf("unsupported cloud provider: %s", cp.Provider)
+		}
+	}
+
+	nsName := "cho-cloud-provider-system"
+	if err := r.ensureClusterNamespace(ctx, nsName, map[string]string{
+		clusterLabelManagedBy: "chocluster",
+		clusterLabelComponent: "cloud-provider-" + cp.Provider,
+	}); err != nil {
+		return err
+	}
+
+	def := operatorDef{
+		name:      "cloud-provider-" + cp.Provider,
+		namespace: nsName,
+		image:     image,
+	}
+	if err := r.ensureOperatorDeployment(ctx, def); err != nil {
+		return err
+	}
+
+	cluster.Status.OperatorStatus["cloud-provider"] = cp.Provider
+	log.Info("Cloud provider reconciled", "provider", cp.Provider)
 	return nil
 }
 

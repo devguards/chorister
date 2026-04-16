@@ -33,28 +33,26 @@ require_cilium() {
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create is not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
-  wait_for_namespace "$SANDBOX_NS" 60 || {
-    # The sandbox namespace may be created by the controller after app creation
-    cho sandbox create --domain "$DOMAIN" --name "$SANDBOX_NAME" --app "$APP_NAME"
-    wait_for_namespace "$SANDBOX_NS" 60
-  }
+  cho admin app create "$APP_NAME" \
+    --owners test@chorister.dev \
+    --compliance regulated \
+    --domains "$DOMAIN"
 
-  # Deploy security-trigger app in sandbox
-  # STUB: chorister apply not implemented — use kubectl
-  kctl apply -n "$SANDBOX_NS" -f "${SCRIPT_DIR}/fixtures/cho-compute-security-trigger.yaml"
+  cho sandbox create --domain "$DOMAIN" --name "$SANDBOX_NAME" --app "$APP_NAME"
+  wait_for_namespace "$SANDBOX_NS" 60
+
+  # Deploy security-trigger app in sandbox via chorister apply
+  cho apply --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME" \
+    --file "${SCRIPT_DIR}/fixtures/cho-compute-security-trigger.yaml"
   wait_for_deployment_ready "$SANDBOX_NS" "security-trigger" 120
 }
 
 # ── 08-assert-vuln-scan-report ────────────────────────────────────────────────
 
 assert_vuln_scan_report() {
-  # STUB: chorister admin scan triggers the scan job
   local rc=0
   cho admin scan --domain "$DOMAIN" --app "$APP_NAME" 2>&1 || rc=$?
-  # stub command exits 0 regardless; we check the CRD separately
-  _assert_pass "chorister admin scan exits 0 (stub accepted)"
+  assert_exit_ok "$rc" "chorister admin scan exits 0"
 
   # Wait for a ChoVulnerabilityReport to appear in sandbox namespace
   local elapsed=0
@@ -82,10 +80,22 @@ assert_admin_vulnerabilities_cmd() {
 # ── 08-assert-vuln-blocks-promotion ──────────────────────────────────────────
 
 assert_vuln_blocks_promotion_standard() {
-  # Set compliance to standard (blocks vulnerable images)
-  # STUB: chorister admin app set-policy is a stub — note and skip real check
-  echo "# STUB: set-policy not implemented; skipping vulnerability gate promotion test"
-  _assert_pass "Vulnerability promotion gate check skipped (set-policy stub)"
+  # Set compliance to standard (blocks vulnerable images on promotion)
+  local rc=0
+  cho admin app set-policy "$APP_NAME" --compliance standard 2>&1 || rc=$?
+  assert_exit_ok "$rc" "chorister admin app set-policy --compliance standard exits 0"
+
+  # Attempt to promote — with standard compliance, vulnerable images should be gated
+  cho sandbox create --domain "$DOMAIN" --name "scan-test" --app "$APP_NAME" 2>/dev/null || true
+  local promote_rc=0
+  local promote_out
+  promote_out="$(cho promote --domain "$DOMAIN" --sandbox "scan-test" --app "$APP_NAME" 2>&1)" || promote_rc=$?
+  if [[ "$promote_rc" -ne 0 ]] || echo "$promote_out" | grep -qi "vulnerab\|scan\|blocked\|gate"; then
+    _assert_pass "Promotion gated by vulnerability scan under standard compliance"
+  else
+    _assert_fail "Promotion should be gated by vulnerability scan" "output: ${promote_out}"
+  fi
+  cho sandbox destroy --domain "$DOMAIN" --name "scan-test" --app "$APP_NAME" 2>/dev/null || true
 }
 
 # ── 08-assert-tetragon-process-exec ──────────────────────────────────────────

@@ -14,11 +14,9 @@ resources:
 - bases/chorister.dev_choclusters.yaml
 - bases/chorister.dev_chosandboxes.yaml
 - bases/chorister.dev_chovulnerabilityreports.yaml
-- bases/chorister.chorister.dev_choapplications.yaml
-- bases/chorister.chorister.dev_chonetworks.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
-patches:
+#patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
 # +kubebuilder:scaffold:crdkustomizewebhookpatch

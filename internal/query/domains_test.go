@@ -28,7 +28,7 @@ import (
 func TestListDomainsByApp(t *testing.T) {
 	s := newScheme()
 	app := &choristerv1alpha1.ChoApplication{
-		ObjectMeta: metav1.ObjectMeta{Name: "myproduct"},
+		ObjectMeta: metav1.ObjectMeta{Name: "myproduct", Namespace: ControlPlaneNamespace},
 		Spec: choristerv1alpha1.ChoApplicationSpec{
 			Owners: []string{"admin@example.com"},
 			Policy: choristerv1alpha1.ApplicationPolicy{
@@ -124,7 +124,8 @@ func TestListDomains_IsolatedDetection(t *testing.T) {
 	s := newScheme()
 	app := &choristerv1alpha1.ChoApplication{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "myproduct",
+			Name:      "myproduct",
+			Namespace: ControlPlaneNamespace,
 			Annotations: map[string]string{
 				"chorister.dev/isolate-payments": "true",
 			},

@@ -50,6 +50,10 @@ type ChoClusterSpec struct {
 	// externalSecretBackend configures the external secret backend for production environments.
 	// +optional
 	ExternalSecretBackend *ExternalSecretBackendSpec `json:"externalSecretBackend,omitempty"`
+
+	// cloudProvider configures the cloud provider plugin for object storage via kro.
+	// +optional
+	CloudProvider *CloudProviderSpec `json:"cloudProvider,omitempty"`
 }
 
 // ControllerRevisionEntry defines a named controller revision with a tag.
@@ -69,6 +73,21 @@ type ExternalSecretBackendSpec struct {
 
 	// secretStoreRef is the name of the ClusterSecretStore or SecretStore to use.
 	SecretStoreRef string `json:"secretStoreRef"`
+}
+
+// CloudProviderSpec configures the cloud provider plugin for object storage provisioning.
+type CloudProviderSpec struct {
+	// provider is the cloud provider.
+	// +kubebuilder:validation:Enum=aws;gcp;azure
+	Provider string `json:"provider"`
+
+	// image overrides the default cloud provider controller image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// region is the default region for cloud resources.
+	// +optional
+	Region string `json:"region,omitempty"`
 }
 
 // OperatorVersions defines desired versions for managed operators.

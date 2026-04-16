@@ -22,8 +22,10 @@ PR_NAME=""
 # ── 03-setup ─────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: replace with chorister admin app create when implemented
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "${APP_NAME}" \
+    --owners platform-admin@example.com \
+    --compliance essential \
+    --domains "${DOMAIN}"
   wait_for_namespace "$PROD_NS" 60
 
   # Create sandbox
@@ -34,21 +36,8 @@ setup() {
 # ── 03-assert-sandbox-and-apply ──────────────────────────────────────────────
 
 assert_sandbox_and_apply() {
-  # STUB: chorister apply is not implemented — use kubectl apply
-  kctl apply -f - -n "$SANDBOX_NS" <<EOF
-apiVersion: chorister.dev/v1alpha1
-kind: ChoCompute
-metadata:
-  name: echo-api
-  namespace: ${SANDBOX_NS}
-spec:
-  application: ${APP_NAME}
-  domain: ${DOMAIN}
-  image: nginx:latest
-  replicas: 1
-  port: 8080
-  variant: long-running
-EOF
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-compute-echo-api.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 
   # Wait for Deployment to be created
   local elapsed=0
@@ -65,13 +54,10 @@ EOF
 # ── 03-assert-diff-before-promote ────────────────────────────────────────────
 
 assert_diff_before_promote() {
-  # STUB: chorister diff is not implemented
-  # Note: diff command is stub, skip diff assertions
   local output rc=0
   output="$(cho diff --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME" 2>&1)" || rc=$?
-  # diff is a stub, just verify it doesn't crash with exit 1 unexpectedly
-  # The stub may print "not yet implemented" — that's acceptable
-  _assert_pass "chorister diff --domain ${DOMAIN} --sandbox ${SANDBOX_NAME} runs (stub)"
+  assert_exit_ok "$rc" "chorister diff exits 0"
+  assert_contains "$output" "echo-api" "diff output mentions echo-api resource"
 }
 
 # ── 03-assert-promote-creates-request ────────────────────────────────────────

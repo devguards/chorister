@@ -1,0 +1,6 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoDatabase
+metadata:
+  name: archive-db
+spec:
+  engine: postgres

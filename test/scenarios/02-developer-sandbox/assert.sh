@@ -19,9 +19,10 @@ SANDBOX_NS="${APP_NAME}-${DOMAIN}-sandbox-${SANDBOX_NAME}"
 # ── 02-setup ─────────────────────────────────────────────────────────────────
 
 setup() {
-  # Create ChoApplication (CLI stub — use kubectl)
-  # STUB: replace with chorister admin app create when implemented
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "${APP_NAME}" \
+    --owners platform-admin@example.com \
+    --compliance essential \
+    --domains "${DOMAIN}"
   wait_for_namespace "${APP_NAME}-${DOMAIN}" 60
 }
 
@@ -58,22 +59,8 @@ assert_sandbox_list() {
 # ── 02-assert-apply-compute ──────────────────────────────────────────────────
 
 assert_apply_compute() {
-  # STUB: chorister apply is not implemented — use kubectl apply
-  # STUB: replace with 'chorister apply --domain $DOMAIN --sandbox $SANDBOX_NAME --file ...' when implemented
-  kctl apply -f - -n "$SANDBOX_NS" <<EOF
-apiVersion: chorister.dev/v1alpha1
-kind: ChoCompute
-metadata:
-  name: echo-api
-  namespace: ${SANDBOX_NS}
-spec:
-  application: ${APP_NAME}
-  domain: ${DOMAIN}
-  image: nginx:latest
-  replicas: 1
-  port: 8080
-  variant: long-running
-EOF
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-compute-echo-api.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 
   # Wait for Deployment to be created by controller
   local elapsed=0
@@ -114,18 +101,8 @@ EOF
 # ── 02-assert-apply-database ─────────────────────────────────────────────────
 
 assert_apply_database() {
-  # STUB: chorister apply is not implemented — use kubectl apply
-  kctl apply -f - -n "$SANDBOX_NS" <<EOF
-apiVersion: chorister.dev/v1alpha1
-kind: ChoDatabase
-metadata:
-  name: db
-  namespace: ${SANDBOX_NS}
-spec:
-  engine: postgres
-  ha: false
-  size: small
-EOF
+  cho apply --file "${SCRIPT_DIR}/fixtures/cho-database.yaml" \
+    --domain "$DOMAIN" --sandbox "$SANDBOX_NAME" --app "$APP_NAME"
 
   # Wait for credentials Secret to be created by controller
   local secret_name="${DOMAIN}--database--db-credentials"

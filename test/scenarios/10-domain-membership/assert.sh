@@ -19,8 +19,16 @@ PAST_EXPIRY="2020-01-01T00:00:00Z"
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
 setup() {
-  # STUB: chorister admin app create not implemented — use kubectl
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-application.yaml"
+  cho admin app create "$APP_NAME" \
+    --owners test@chorister.dev \
+    --compliance essential \
+    --domains "$DOMAIN"
+
+  # Set domain sensitivity to restricted (requires expiry on membership)
+  cho admin domain set-sensitivity "$DOMAIN" --app "$APP_NAME" --sensitivity restricted 2>/dev/null || {
+    # Fall back to set-policy if set-sensitivity targets the whole app
+    cho admin app set-policy "$APP_NAME" --compliance regulated 2>/dev/null || true
+  }
   wait_for_namespace "$PROD_NS" 60
 }
 
@@ -67,8 +75,7 @@ assert_add_member_with_expiry() {
     fi
     sleep 3; elapsed=$((elapsed + 3))
   done
-  # Non-fatal: CLI may be a stub that prints success but doesn't create the CR yet
-  echo "[SKIP] ChoDomainMembership CR not found (admin member add may be partially implemented)"
+  _assert_fail "ChoDomainMembership CR created for ${MEMBER_IDENTITY}" "not found after 30s"
 }
 
 # ── 10-assert-developer-cannot-write-prod ────────────────────────────────────
@@ -83,15 +90,14 @@ assert_developer_cannot_write_prod() {
 # ── 10-assert-developer-can-read-prod ────────────────────────────────────────
 
 assert_developer_can_read_prod() {
-  # Developers get read access to production namespace
-  # The RoleBinding may not exist yet if the controller is a stub
+  # Developers get read access to production namespace via ChoDomainMembership RoleBinding
   local result
   result=$(kctl auth can-i get pods \
     --namespace "$PROD_NS" --as "$MEMBER_IDENTITY" 2>/dev/null || echo "no")
   if [[ "$result" == "yes" ]]; then
     _assert_pass "developer alice can get pods in production (read-only)"
   else
-    echo "[SKIP] developer alice cannot get pods in production — RoleBinding may not exist yet (controller stub)"
+    _assert_fail "developer alice can get pods in production (read-only)" "got: ${result}"
   fi
 }
 
@@ -106,10 +112,18 @@ assert_member_list() {
 # ── 10-assert-expired-membership-removed ─────────────────────────────────────
 
 assert_expired_membership_removed() {
-  # Apply a membership with expiry in the past via kubectl (CLI may be a stub)
-  kctl apply -f "${SCRIPT_DIR}/fixtures/cho-domainmembership-expired.yaml" 2>/dev/null || {
-    echo "[SKIP] Could not apply expired ChoDomainMembership fixture"
-    return
+  # Create a membership with expiry in the past via CLI
+  cho admin member add \
+    --app "$APP_NAME" \
+    --domain "$DOMAIN" \
+    --identity "bob-expired@chorister-test.dev" \
+    --role developer \
+    --expires-at "$PAST_EXPIRY" 2>/dev/null || {
+    # If CLI rejects past expiry, apply directly
+    kctl apply -f "${SCRIPT_DIR}/fixtures/cho-domainmembership-expired.yaml" 2>/dev/null || {
+      echo "[SKIP] Could not create expired ChoDomainMembership fixture"
+      return
+    }
   }
 
   # Trigger reconciliation by touching the object
@@ -149,25 +163,19 @@ assert_member_audit() {
 # ── 10-assert-member-remove ───────────────────────────────────────────────────
 
 assert_member_remove() {
-  # STUB: chorister admin member remove is a stub
-  # Verify the stub command at least exits 0
   local output rc=0
   output="$(cho admin member remove --app "$APP_NAME" --domain "$DOMAIN" \
-    --identity "$MEMBER_IDENTITY" 2>&1)" || rc=$?
-  if [[ "$rc" -eq 0 ]]; then
-    _assert_pass "admin member remove exits 0 (stub accepted)"
-  else
-    echo "[SKIP] admin member remove is not yet implemented (exit=${rc})"
-  fi
+    --identity "$MEMBER_IDENTITY" --confirm 2>&1)" || rc=$?
+  assert_exit_ok "$rc" "admin member remove exits 0"
+  assert_contains "$output" "removed" "admin member remove confirms removal"
 }
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
 cleanup() {
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-application.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
-  kctl delete -f "${SCRIPT_DIR}/fixtures/cho-domainmembership-expired.yaml" \
-    --ignore-not-found=true 2>/dev/null || true
+  cho admin app delete "$APP_NAME" --confirm 2>/dev/null || true
+  kctl delete chodomainmembership scen10-expired-member \
+    -n cho-system --ignore-not-found=true 2>/dev/null || true
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────

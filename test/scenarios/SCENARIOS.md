@@ -154,15 +154,13 @@ Each task is self-contained. Work one task at a time. Mark `[x]` when done.
   3. Tear down cluster
 
 - [x] **01-assert-setup** — Verify `chorister setup --dry-run` completes without error.
-  - **Blocked on:** `chorister setup` actual implementation (currently returns an error unless cluster is running).
-  - **Workaround:** Apply CRDs + controller manually via `kubectl apply -k config/default`, then assert controller pod is Running.
 
 - [x] **01-assert-cluster-bootstrap** — Create a `ChoCluster` CR and verify:
   - Controller pod is Running in `cho-system`
   - CRDs are registered (all 12)
   - `chorister admin app list` returns empty list (not an error)
 
-- [x] **01-assert-app-create** — Create a `ChoApplication` via kubectl (CLI `admin app create` is a stub):
+- [x] **01-assert-app-create** — Create a `ChoApplication` via `chorister admin app create`:
   - Assert domain namespaces are created: `myapp-payments`, `myapp-auth`
   - Assert default-deny NetworkPolicy exists in each namespace
   - Assert `chorister status --app myapp` shows both domains
@@ -637,18 +635,18 @@ chorister export [--domain <d>] [--app <a>] [--output ...]
 
 chorister admin app list [--output ...]
 chorister admin app get <name> [--output ...]
-chorister admin app create <name>                    # stub — use kubectl apply for now
+chorister admin app create <name>                    # --owners, --compliance, --domains flags
 chorister admin app delete <name> [--dry-run] [--confirm]
-chorister admin app set-policy <name>               # stub
+chorister admin app set-policy <name>               # --compliance, --approvers, etc.
 
 chorister admin domain list [--app <a>] [--output ...]
 chorister admin domain get <name> --app <a> [--output ...]
-chorister admin domain create <name>                # stub
+chorister admin domain create <name>                # adds domain to app spec
 chorister admin domain delete <name> --app <a> [--dry-run] [--confirm]
 
 chorister admin member add --app <a> --domain <d> --identity <e> --role <r> [--expires-at <rfc3339>] [--source manual|oidc-group]
 chorister admin member list [--app <a>] [--domain <d>] [--role <r>] [--include-expired] [--output ...]
-chorister admin member remove                       # stub
+chorister admin member remove --app <a> --domain <d> --identity <e> [--confirm]
 chorister admin member audit --app <a> [--output ...]
 
 chorister admin cluster                             # cluster management subcommands
@@ -665,15 +663,12 @@ chorister admin upgrade
 chorister admin export-config
 ```
 
-> **Differences from ARCHITECTURE_DECISIONS.md examples:**
-> The current CLI has more commands than shown in the architecture doc. Use the list above (derived from actual code) as ground truth for scripts.
-> Notable additions: `events`, `get`, `wait`, `docs`, `admin cluster`, `admin audit`, `admin finops`, `admin quotas`, `admin vulnerabilities`, `admin scan`, `admin export-config`, `sandbox status`.
+> **Note:** The CLI has more commands than shown in the architecture doc. Use the list above (derived from actual code) as ground truth for scripts.
+> All commands are fully implemented — no stubs or placeholders.
 
-### When a CLI Command Is Still a Stub
-If a command prints `(not yet implemented)` and returns nil, the scenario step should:
-1. Note this explicitly in a comment.
-2. Fall back to `kubectl apply` with the equivalent CRD YAML.
-3. Mark the step with `# STUB: replace with CLI call when implemented`.
+### CLI Command Status
+All CLI commands listed above are fully implemented. There are no stubs or placeholder commands.
+The scenario scripts use the `chorister` CLI directly for all operations.
 
 ### CRD YAML for Common Resources
 Store reusable CRD YAML fixtures in each scenario folder under `fixtures/`.
@@ -697,74 +692,6 @@ When `run-all.sh --parallel` is used:
 - Each scenario creates its own `ChoApplication` with a unique app name (e.g., `scen01-myapp`).
 - Do NOT assume shared state between scenarios.
 - Do NOT hardcode cluster IPs or node names.
-
----
-
-## CLI Gap Analysis (Architecture Doc vs Current Implementation)
-
-> Last verified: 2026-04-15 against `cmd/chorister/main.go`
-
-### Stubs (print message, no cluster mutation)
-
-| Command | Stub message | Action needed in scenarios |
-|---|---|---|
-| `chorister setup` (without `--dry-run`) | Returns error: "setup requires a running Kubernetes cluster" | Bypass: apply CRDs + controller via `kubectl apply -k config/default` |
-| `chorister setup --dry-run` | Prints what would happen, returns nil ✅ (dry-run only) | Safe to use in 01-assert-setup |
-| `chorister sandbox create` | ✅ Ready | Creates ChoSandbox CRD; controller provisions namespace |
-| `chorister sandbox destroy` | ✅ Ready | Deletes ChoSandbox CRD; controller cleans up namespace via finalizer |
-| `chorister diff` | Stub — prints "not yet implemented" | Note in scenario 03; skip diff assertions |
-| `chorister logs <component>` | ✅ Ready | Streams pod logs via Kubernetes clientset; lists components if no arg |
-| `chorister admin app set-policy` | ✅ Ready | Updates compliance, approvers, security scan, archive retention, idle days |
-| `chorister export` | ✅ Ready | Exports all Cho CRDs from live domain namespace (ChoCompute, ChoDatabase, ChoQueue, ChoCache, ChoStorage, ChoNetwork) |
-| `chorister login` | Prints "login: not yet implemented", returns nil | Not exercised in scenarios |
-| `chorister apply --file` | Prints "not yet implemented", returns nil | Bypass with `kubectl apply` + STUB comment in scenarios 02, 03 |
-| `chorister reject <id>` | Prints "not yet implemented", returns nil | Note in scenario 03 |
-| `chorister admin app create` | Prints "not yet implemented", returns nil | Bypass with `kubectl apply` ChoApplication CRD in scenarios |
-| `chorister admin domain create` | Prints "not yet implemented", returns nil | Bypass with `kubectl patch` ChoApplication domains list |
-| `chorister admin member remove` | Prints "not yet implemented", returns nil | Note in scenario 10 |
-
-### Implemented (queries or mutates live cluster)
-
-| Command | Status | Notes |
-|---|---|---|
-| `chorister version` | ✅ Ready | Prints build info |
-| `chorister promote` | ✅ Ready | Creates ChoPromotionRequest CRD |
-| `chorister promote --rollback` | ✅ Ready | Creates rollback ChoPromotionRequest |
-| `chorister requests` | ✅ Ready | Lists ChoPromotionRequests with filters |
-| `chorister status [domain]` | ✅ Ready | Domain health summary or detail view |
-| `chorister sandbox list` | ✅ Ready | Lists ChoSandbox resources |
-| `chorister sandbox status` | ✅ Ready | Detail view for a single sandbox |
-| `chorister events` | ✅ Ready | Lists K8s Events for chorister resources |
-| `chorister get <type> <name>` | ✅ Ready | Inspects any chorister resource |
-| `chorister wait` | ✅ Ready | Polls condition with timeout |
-| `chorister export` | ⚠ Partial | Only exports restricted-domain L7 policy; other resource types emit empty file |
-| `chorister admin app list` | ✅ Ready | Lists ChoApplication resources |
-| `chorister admin app get` | ✅ Ready | Detail view with domain list |
-| `chorister admin app delete` | ✅ Ready | Deletes with --dry-run and --confirm gate |
-| `chorister admin domain list` | ✅ Ready | Lists domains across apps |
-| `chorister admin domain get` | ✅ Ready | Detail view with resource list |
-| `chorister admin domain delete` | ✅ Ready | Removes domain from ChoApplication spec |
-| `chorister admin domain set-sensitivity` | ✅ Ready | Updates domain sensitivity with compliance check |
-| `chorister admin member add` | ✅ Ready | Creates ChoDomainMembership with expiry enforcement |
-| `chorister admin member list` | ✅ Ready | Lists with role/domain/expired filters |
-| `chorister admin member audit` | ✅ Ready | Flags expired/stale memberships |
-| `chorister admin compliance report` | ✅ Ready | Full compliance report per framework |
-| `chorister admin compliance status` | ✅ Ready | Summary pass/fail view |
-| `chorister admin cluster status` | ✅ Ready | ChoCluster health and operator status |
-| `chorister admin cluster operators` | ✅ Ready | Lists managed operators with versions |
-| `chorister admin audit` | ✅ Ready | Queries Loki audit log (needs CHORISTER_LOKI_URL) |
-| `chorister admin finops report` | ✅ Ready | Cost breakdown by domain/sandbox |
-| `chorister admin finops budget` | ✅ Ready | Budget utilization per domain |
-| `chorister admin quotas` | ✅ Ready | ResourceQuota utilization per domain |
-| `chorister admin vulnerabilities list` | ✅ Ready | Lists ChoVulnerabilityReports |
-| `chorister admin vulnerabilities get` | ✅ Ready | Detail view with findings table |
-| `chorister admin scan` | ✅ Ready | Triggers scan via CronJob annotation |
-| `chorister admin isolate` | ✅ Ready | Sets isolation annotation on ChoApplication |
-| `chorister admin unisolate` | ✅ Ready | Removes isolation annotation |
-| `chorister admin resource list` | ✅ Ready | Lists resources in a domain namespace |
-| `chorister admin resource delete` | ✅ Ready | Deletes an archived resource by name+type+namespace |
-| `chorister admin upgrade` | ✅ Ready | Blue-green canary revision management on ChoCluster |
-| `chorister admin export-config` | ✅ Ready | Exports ChoApplication + ChoDomainMembership CRDs as YAML |
 
 ---
 

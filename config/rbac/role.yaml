@@ -23,6 +23,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -179,6 +187,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - stackgres.io
+  resources:
+  - sgbackups
+  verbs:
+  - create
+  - get
+  - list
   - watch
 - apiGroups:
   - stackgres.io
