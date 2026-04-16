@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -989,6 +990,81 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			Expect(prodCache.Status.ArchivedAt).NotTo(BeNil())
 			Expect(prodCache.Status.DeletableAfter).NotTo(BeNil())
 			Expect(prodCache.Status.Ready).To(BeFalse())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 3 — getArchiveRetention clamps to 30-day minimum
+	// -----------------------------------------------------------------------
+	Context("Gap 3 — Archive retention clamp", func() {
+		It("should clamp archive retention below 30 days to default 30 days", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-clamp-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance:       "essential",
+						ArchiveRetention: "7d",
+						Promotion:        choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-clamp-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-clamp-app",
+					Domain:      "api",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			retention := reconciler.getArchiveRetention(ctx, pr)
+			Expect(retention).To(Equal(30 * 24 * time.Hour))
+		})
+
+		It("should accept archive retention at or above 30 days", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-above-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance:       "essential",
+						ArchiveRetention: "90d",
+						Promotion:        choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-above-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-above-app",
+					Domain:      "api",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			retention := reconciler.getArchiveRetention(ctx, pr)
+			Expect(retention).To(Equal(90 * 24 * time.Hour))
 		})
 	})
 })

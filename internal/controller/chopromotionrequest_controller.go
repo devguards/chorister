@@ -838,6 +838,11 @@ func (r *ChoPromotionRequestReconciler) getArchiveRetention(ctx context.Context,
 	if err != nil {
 		return defaultRetention
 	}
+	if duration < defaultRetention {
+		logf.FromContext(ctx).Info("ArchiveRetention below 30-day minimum; clamping to default",
+			"configured", app.Spec.Policy.ArchiveRetention, "applied", defaultRetention)
+		return defaultRetention
+	}
 	return duration
 }
 

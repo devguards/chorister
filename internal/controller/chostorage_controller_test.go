@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -171,6 +172,61 @@ var _ = Describe("ChoStorage Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
 			Expect(storage.Status.BucketName).To(BeEmpty())
 			Expect(storage.Status.Ready).To(BeTrue())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 3 — 30-day retention lower-bound negative test
+	// -----------------------------------------------------------------------
+	Context("Gap 3 — Archive retention lower bound", func() {
+		It("should NOT transition to Deletable before retention period expires", func() {
+			storageSize := resource.MustParse("5Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "retention-test-storage", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Variant:     "block",
+					Size:        &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)
+				storage.Finalizers = nil
+				_ = k8sClient.Update(ctx, storage)
+				_ = k8sClient.Delete(ctx, storage)
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch to get latest resourceVersion after reconcile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
+
+			// Set lifecycle=Archived with deletableAfter 29 days in the future
+			now := metav1.Now()
+			deletableAfter := metav1.NewTime(now.Add(29 * 24 * time.Hour))
+			storage.Status.Lifecycle = "Archived"
+			storage.Status.ArchivedAt = &now
+			storage.Status.DeletableAfter = &deletableAfter
+			Expect(k8sClient.Status().Update(ctx, storage)).To(Succeed())
+
+			// Reconcile: should NOT transition to Deletable (retention not expired)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify lifecycle is still Archived
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
+			Expect(storage.Status.Lifecycle).To(Equal("Archived"))
+			Expect(storage.Status.Ready).To(BeFalse())
 		})
 	})
 

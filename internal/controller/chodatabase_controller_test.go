@@ -173,6 +173,55 @@ var _ = Describe("ChoDatabase Controller", func() {
 			Expect(db.Status.Instances).To(Equal(int32(1)))
 		})
 
+		It("should NOT transition to Deletable before retention period expires", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "retention-test-db", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)
+				db.Finalizers = nil
+				_ = k8sClient.Update(ctx, db)
+				_ = k8sClient.Delete(ctx, db)
+			}()
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch to get latest resourceVersion after reconcile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
+
+			// Set lifecycle=Archived with deletableAfter 29 days in the future
+			now := metav1.Now()
+			deletableAfter := metav1.NewTime(now.Add(29 * 24 * time.Hour))
+			db.Status.Lifecycle = "Archived"
+			db.Status.ArchivedAt = &now
+			db.Status.DeletableAfter = &deletableAfter
+			Expect(k8sClient.Status().Update(ctx, db)).To(Succeed())
+
+			// Reconcile: should NOT transition to Deletable (retention not expired)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify lifecycle is still Archived
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: db.Name, Namespace: db.Namespace}, db)).To(Succeed())
+			Expect(db.Status.Lifecycle).To(Equal("Archived"))
+			Expect(db.Status.Ready).To(BeFalse())
+		})
+
 		It("should archive on deletion instead of removing (production)", func() {
 			// Create a ChoDatabase in the default namespace (non-sandbox)
 			db := &choristerv1alpha1.ChoDatabase{

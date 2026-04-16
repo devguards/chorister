@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -264,6 +265,60 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(queue.Status.Ready).To(BeTrue())
 			Expect(queue.Status.Lifecycle).To(Equal("Active"))
 			Expect(queue.Status.CredentialsSecretRef).To(Equal("payments--queue--events-status-credentials"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 3 — 30-day retention lower-bound negative test
+	// -----------------------------------------------------------------------
+	Context("Gap 3 — Archive retention lower bound", func() {
+		It("should NOT transition to Deletable before retention period expires", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "retention-test-queue", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue)
+				queue.Finalizers = nil
+				_ = k8sClient.Update(ctx, queue)
+				_ = k8sClient.Delete(ctx, queue)
+			}()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch to get latest resourceVersion after reconcile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue)).To(Succeed())
+
+			// Set lifecycle=Archived with deletableAfter 29 days in the future
+			now := metav1.Now()
+			deletableAfter := metav1.NewTime(now.Add(29 * 24 * time.Hour))
+			queue.Status.Lifecycle = "Archived"
+			queue.Status.ArchivedAt = &now
+			queue.Status.DeletableAfter = &deletableAfter
+			Expect(k8sClient.Status().Update(ctx, queue)).To(Succeed())
+
+			// Reconcile: should NOT transition to Deletable (retention not expired)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify lifecycle is still Archived
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue)).To(Succeed())
+			Expect(queue.Status.Lifecycle).To(Equal("Archived"))
+			Expect(queue.Status.Ready).To(BeFalse())
 		})
 	})
 
