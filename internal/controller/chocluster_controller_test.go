@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -501,6 +502,91 @@ var _ = Describe("ChoCluster Controller", func() {
 			Expect(encCondition).NotTo(BeNil())
 			Expect(encCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(encCondition.Reason).To(Equal("NotFound"))
+		})
+
+		It("should detect encrypted StorageClass and set condition to True (Gap 11 C)", func() {
+			// Create an encrypted StorageClass with the annotation marker
+			sc := &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "enc-gp3-cluster-test",
+					Annotations: map[string]string{
+						"storageclass.kubernetes.io/is-encrypted": "true",
+					},
+				},
+				Provisioner: "ebs.csi.aws.com",
+			}
+			Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sc) }()
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "sc-positive-cluster"},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			var encCondition *metav1.Condition
+			for i := range cluster.Status.Conditions {
+				if cluster.Status.Conditions[i].Type == "EncryptedStorageAvailable" {
+					encCondition = &cluster.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(encCondition).NotTo(BeNil())
+			Expect(encCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(encCondition.Reason).To(Equal("Found"))
+			Expect(encCondition.Message).To(ContainSubstring("enc-gp3-cluster-test"))
+		})
+
+		It("should detect encrypted StorageClass via parameters (Gap 11 C)", func() {
+			// Create an encrypted StorageClass via CSI secret parameter
+			sc := &storagev1.StorageClass{
+				ObjectMeta:  metav1.ObjectMeta{Name: "enc-csi-cluster-test"},
+				Provisioner: "csi.example.com",
+				Parameters: map[string]string{
+					"csi.storage.k8s.io/node-stage-secret-name": "enc-secret",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sc) }()
+
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "sc-csi-positive-cluster"},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: cluster.Name},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			var encCondition *metav1.Condition
+			for i := range cluster.Status.Conditions {
+				if cluster.Status.Conditions[i].Type == "EncryptedStorageAvailable" {
+					encCondition = &cluster.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(encCondition).NotTo(BeNil())
+			Expect(encCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(encCondition.Reason).To(Equal("Found"))
 		})
 
 		It("should create kube-bench CronJob and update CIS benchmark status", func() {

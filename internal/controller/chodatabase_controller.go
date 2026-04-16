@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,6 +70,7 @@ type ChoDatabaseReconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=stackgres.io,resources=sgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=stackgres.io,resources=sginstanceprofiles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=stackgres.io,resources=sgbackups,verbs=get;list;watch;create
 
 // Reconcile moves the cluster state to match the desired ChoDatabase spec.
@@ -123,6 +125,9 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		instances = 2
 	}
 
+	// Select encrypted StorageClass for database volumes
+	storageClassName := r.findEncryptedStorageClass(ctx)
+
 	// Ensure StackGres SGInstanceProfile
 	profileName := fmt.Sprintf("%s-%s", db.Spec.Domain, db.Name)
 	if err := r.ensureSGInstanceProfile(ctx, db, profileName); err != nil {
@@ -132,7 +137,7 @@ func (r *ChoDatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Ensure StackGres SGCluster
 	sgClusterName := fmt.Sprintf("%s-%s", db.Spec.Domain, db.Name)
-	if err := r.ensureSGCluster(ctx, db, sgClusterName, profileName, instances); err != nil {
+	if err := r.ensureSGCluster(ctx, db, sgClusterName, profileName, instances, storageClassName); err != nil {
 		log.Error(err, "Failed to ensure SGCluster", "name", sgClusterName)
 		// Non-fatal: continue even if StackGres CRDs are not installed
 	}
@@ -352,8 +357,8 @@ func (r *ChoDatabaseReconciler) ensureCredentialSecret(ctx context.Context, db *
 }
 
 // ensureSGCluster creates or updates a StackGres SGCluster for the database.
-func (r *ChoDatabaseReconciler) ensureSGCluster(ctx context.Context, db *choristerv1alpha1.ChoDatabase, name string, profileName string, instances int32) error {
-	desired := buildSGCluster(db, name, profileName, instances)
+func (r *ChoDatabaseReconciler) ensureSGCluster(ctx context.Context, db *choristerv1alpha1.ChoDatabase, name string, profileName string, instances int32, storageClassName string) error {
+	desired := buildSGCluster(db, name, profileName, instances, storageClassName)
 
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(sgClusterGVK)
@@ -371,8 +376,15 @@ func (r *ChoDatabaseReconciler) ensureSGCluster(ctx context.Context, db *chorist
 }
 
 // buildSGCluster constructs an unstructured SGCluster with Patroni HA and PgBouncer.
-func buildSGCluster(db *choristerv1alpha1.ChoDatabase, name, profileName string, instances int32) *unstructured.Unstructured {
+func buildSGCluster(db *choristerv1alpha1.ChoDatabase, name, profileName string, instances int32, storageClassName string) *unstructured.Unstructured {
 	volumeSize := dbVolumeSize(db.Spec.Size)
+
+	persistentVolume := map[string]any{
+		"size": volumeSize,
+	}
+	if storageClassName != "" {
+		persistentVolume["storageClass"] = storageClassName
+	}
 
 	sgCluster := &unstructured.Unstructured{
 		Object: map[string]any{
@@ -395,9 +407,7 @@ func buildSGCluster(db *choristerv1alpha1.ChoDatabase, name, profileName string,
 				},
 				"sgInstanceProfile": profileName,
 				"pods": map[string]any{
-					"persistentVolume": map[string]any{
-						"size": volumeSize,
-					},
+					"persistentVolume": persistentVolume,
 				},
 				"configurations": map[string]any{
 					"sgPoolingConfig": "sgpoolingconfig1",
@@ -505,6 +515,28 @@ func generatePassword(length int) (string, error) {
 		result[i] = chars[idx.Int64()]
 	}
 	return string(result), nil
+}
+
+// findEncryptedStorageClass lists StorageClasses and returns the name of the first
+// encrypted one found. Returns empty string if none is found or listing fails.
+func (r *ChoDatabaseReconciler) findEncryptedStorageClass(ctx context.Context) string {
+	log := logf.FromContext(ctx)
+
+	scList := &storagev1.StorageClassList{}
+	if err := r.List(ctx, scList); err != nil {
+		log.Info("Could not list StorageClasses for encryption selection", "error", err)
+		return ""
+	}
+
+	for _, sc := range scList.Items {
+		if isEncryptedStorageClass(sc) {
+			log.Info("Selected encrypted StorageClass for database volumes", "storageClass", sc.Name)
+			return sc.Name
+		}
+	}
+
+	log.Info("No encrypted StorageClass found; using cluster default")
+	return ""
 }
 
 // SetupWithManager sets up the controller with the Manager.

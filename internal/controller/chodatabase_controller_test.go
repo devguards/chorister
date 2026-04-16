@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -387,7 +390,7 @@ var _ = Describe("ChoDatabase Controller", func() {
 					HA:          true,
 				},
 			}
-			sgCluster := buildSGCluster(db, "payments-main", "payments-main", 2)
+			sgCluster := buildSGCluster(db, "payments-main", "payments-main", 2, "")
 
 			Expect(sgCluster.GetKind()).To(Equal("SGCluster"))
 			Expect(sgCluster.GetName()).To(Equal("payments-main"))
@@ -419,7 +422,7 @@ var _ = Describe("ChoDatabase Controller", func() {
 					HA:          false,
 				},
 			}
-			sgCluster := buildSGCluster(db, "dev-test", "dev-test", 1)
+			sgCluster := buildSGCluster(db, "dev-test", "dev-test", 1, "")
 
 			spec := sgCluster.Object["spec"].(map[string]any)
 			Expect(spec["instances"]).To(Equal(int64(1)))
@@ -442,7 +445,7 @@ var _ = Describe("ChoDatabase Controller", func() {
 					Size:        "large",
 				},
 			}
-			sgCluster := buildSGCluster(db, "data-main", "data-main", 1)
+			sgCluster := buildSGCluster(db, "data-main", "data-main", 1, "")
 
 			spec := sgCluster.Object["spec"].(map[string]any)
 			configs := spec["configurations"].(map[string]any)
@@ -467,6 +470,43 @@ var _ = Describe("ChoDatabase Controller", func() {
 			cpu, mem = dbProfileResources("large")
 			Expect(cpu).To(Equal("4"))
 			Expect(mem).To(Equal("8Gi"))
+		})
+
+		It("should set storageClass on SGCluster when encrypted StorageClass is provided", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "enc-db", Namespace: "ns"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			sgCluster := buildSGCluster(db, "data-enc-db", "data-enc-db", 1, "encrypted-gp3")
+
+			spec := sgCluster.Object["spec"].(map[string]any)
+			pods := spec["pods"].(map[string]any)
+			pv := pods["persistentVolume"].(map[string]any)
+			Expect(pv["storageClass"]).To(Equal("encrypted-gp3"))
+		})
+
+		It("should omit storageClass on SGCluster when no encrypted StorageClass is found", func() {
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "noenc-db", Namespace: "ns"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "data",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			sgCluster := buildSGCluster(db, "data-noenc-db", "data-noenc-db", 1, "")
+
+			spec := sgCluster.Object["spec"].(map[string]any)
+			pods := spec["pods"].(map[string]any)
+			pv := pods["persistentVolume"].(map[string]any)
+			_, hasStorageClass := pv["storageClass"]
+			Expect(hasStorageClass).To(BeFalse(), "storageClass should not be set when no encrypted SC is found")
 		})
 	})
 
@@ -625,6 +665,75 @@ var _ = Describe("ChoDatabase Controller", func() {
 				NamespacedName: types.NamespacedName{Name: "nonexistent-db", Namespace: "default"},
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 11 A — Encrypted StorageClass selection for database PVCs
+	// -----------------------------------------------------------------------
+	Context("Gap 11 A — Encrypted StorageClass selection", func() {
+		It("should select encrypted StorageClass for SGCluster volumes", func() {
+			// Create an encrypted StorageClass
+			sc := &storagev1.StorageClass{
+				ObjectMeta:  metav1.ObjectMeta{Name: "enc-gp3-db-test"},
+				Provisioner: "ebs.csi.aws.com",
+				Parameters:  map[string]string{"encrypted": "true"},
+			}
+			Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, sc) }()
+
+			db := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "enc-sc-db", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "myapp",
+					Domain:      "billing",
+					Engine:      "postgres",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, db)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, db) }()
+
+			reconciler := &ChoDatabaseReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: db.Name, Namespace: db.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the controller discovered the encrypted StorageClass.
+			// In envtest there are no StackGres CRDs, so the SGCluster creation
+			// fails silently. We verify by calling findEncryptedStorageClass directly.
+			found := reconciler.findEncryptedStorageClass(ctx)
+			Expect(found).To(Equal("enc-gp3-db-test"))
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// Gap 11 B — Negative regression: no encryption-disable field in CRD
+	// -----------------------------------------------------------------------
+	Context("Gap 11 B — No encryption-disable field in CRD", func() {
+		It("should not have any encryption toggle field in ChoDatabaseSpec", func() {
+			dbSpec := choristerv1alpha1.ChoDatabaseSpec{}
+			t := reflect.TypeOf(dbSpec)
+			for i := 0; i < t.NumField(); i++ {
+				fieldName := t.Field(i).Name
+				lower := strings.ToLower(fieldName)
+				Expect(lower).NotTo(ContainSubstring("encrypt"),
+					"ChoDatabaseSpec must not contain an encryption toggle field, found: %s", fieldName)
+				Expect(lower).NotTo(ContainSubstring("storageclass"),
+					"ChoDatabaseSpec must not contain a storageClass override field, found: %s", fieldName)
+			}
+		})
+
+		It("should not have any encryption toggle field in ChoClusterSpec", func() {
+			clusterSpec := choristerv1alpha1.ChoClusterSpec{}
+			t := reflect.TypeOf(clusterSpec)
+			for i := 0; i < t.NumField(); i++ {
+				fieldName := t.Field(i).Name
+				lower := strings.ToLower(fieldName)
+				Expect(lower).NotTo(ContainSubstring("encrypt"),
+					"ChoClusterSpec must not contain an encryption toggle field, found: %s", fieldName)
+			}
 		})
 	})
 })
