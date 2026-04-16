@@ -101,6 +101,47 @@ AGENT=""
 AUTO_APPROVE=0
 COMMIT_PREFIX="copilot"
 TARGETS=()
+SUCCEEDED_TARGETS=()
+NO_CHANGE_TARGETS=()
+FAILED_TARGETS=()
+STASHED_TARGETS=()
+
+stash_failed_target() {
+  local target_rel="$1"
+  local reason="$2"
+  local stash_label="$COMMIT_PREFIX failed: $target_rel"
+
+  if has_repo_changes; then
+    printf 'Stashing partial changes for %s\n' "$target_rel"
+    git stash push -u -m "$stash_label" >/dev/null
+    STASHED_TARGETS+=("$target_rel -> $stash_label")
+  fi
+
+  FAILED_TARGETS+=("$target_rel ($reason)")
+}
+
+print_summary() {
+  printf '\nBatch summary:\n'
+  printf '  Successful commits: %d\n' "${#SUCCEEDED_TARGETS[@]}"
+  for target in "${SUCCEEDED_TARGETS[@]}"; do
+    printf '    - %s\n' "$target"
+  done
+
+  printf '  No-change targets: %d\n' "${#NO_CHANGE_TARGETS[@]}"
+  for target in "${NO_CHANGE_TARGETS[@]}"; do
+    printf '    - %s\n' "$target"
+  done
+
+  printf '  Failed targets: %d\n' "${#FAILED_TARGETS[@]}"
+  for target in "${FAILED_TARGETS[@]}"; do
+    printf '    - %s\n' "$target"
+  done
+
+  printf '  Stashed failures: %d\n' "${#STASHED_TARGETS[@]}"
+  for target in "${STASHED_TARGETS[@]}"; do
+    printf '    - %s\n' "$target"
+  done
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -189,11 +230,12 @@ Guidelines:
 - Use this target as the starting point, then read and modify any other repository files you need.
 - Follow repository default instructions and any instruction files you find.
 - Run tests, review failures, and keep iterating until the result is correct and the tests you judge relevant pass.
+- If a tool call or test run fails, inspect it, recover when possible, and continue working instead of stopping at the first failure.
 - Suggested test command (hint only, adjust as needed): $TEST_CMD
 EOF
 )
 
-  copilot_cmd=(copilot -p "$scoped_prompt" -s --no-ask-user --allow-all)
+  copilot_cmd=(copilot -p "$scoped_prompt" -s --no-ask-user)
 
   if [[ -n "$MODEL" ]]; then
     copilot_cmd+=(--model "$MODEL")
@@ -209,25 +251,61 @@ EOF
     copilot_cmd+=(--allow-tool=read,write,shell --allow-all-paths)
   fi
 
-  "${copilot_cmd[@]}"
+  if "${copilot_cmd[@]}"; then
+    :
+  else
+    copilot_status=$?
+    printf 'Copilot failed for %s with exit code %d\n' "$target_rel" "$copilot_status"
+    stash_failed_target "$target_rel" "copilot exited with status $copilot_status"
+    continue
+  fi
 
   if ! has_repo_changes; then
     printf 'No changes for %s, skipping tests and commit.\n' "$target_rel"
+    NO_CHANGE_TARGETS+=("$target_rel")
     continue
   fi
 
   printf 'Running final verification: %s\n' "$TEST_CMD"
-  eval "$TEST_CMD"
+  if eval "$TEST_CMD"; then
+    :
+  else
+    test_status=$?
+    printf 'Final verification failed for %s with exit code %d\n' "$target_rel" "$test_status"
+    stash_failed_target "$target_rel" "final verification failed with status $test_status"
+    continue
+  fi
 
   git add -A
 
   if git diff --cached --quiet; then
     printf 'No staged diff remains for %s after tests, skipping commit.\n' "$target_rel"
+    NO_CHANGE_TARGETS+=("$target_rel")
     continue
   fi
 
-  git commit -m "$COMMIT_PREFIX: $target_rel"
-  require_clean_tree || fail "working tree is not clean after committing $target_rel"
+  if git commit -m "$COMMIT_PREFIX: $target_rel"; then
+    :
+  else
+    commit_status=$?
+    printf 'Commit failed for %s with exit code %d\n' "$target_rel" "$commit_status"
+    stash_failed_target "$target_rel" "git commit failed with status $commit_status"
+    continue
+  fi
+
+  if ! require_clean_tree; then
+    printf 'Working tree was not clean after committing %s\n' "$target_rel"
+    stash_failed_target "$target_rel" "working tree not clean after commit"
+    continue
+  fi
+
+  SUCCEEDED_TARGETS+=("$target_rel")
 done
+
+print_summary
+
+if [[ ${#FAILED_TARGETS[@]} -gt 0 ]]; then
+  exit 1
+fi
 
 printf '\nAll targets processed successfully.\n'
