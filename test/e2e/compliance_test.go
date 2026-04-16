@@ -351,3 +351,41 @@ func TestE2E_AuthNoneAllRoutesRejected(t *testing.T) {
 
 	testEnv.Test(t, feature)
 }
+
+func TestE2E_SensitivityCannotWeakenCompliance(t *testing.T) {
+	const appName = "e2e-sensitivity-weaken"
+
+	feature := features.New("sensitivity cannot weaken compliance").
+		Assess("standard app with public domain is rejected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client().Resources()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: "cho-system",
+				},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"test@chorister.dev"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "standard",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{
+						{Name: "payments", Sensitivity: "public"},
+					},
+				},
+			}
+			err := client.Create(ctx, app)
+			if err == nil {
+				_ = client.Delete(ctx, app)
+				t.Fatal("expected webhook to reject ChoApplication where domain sensitivity weakens compliance")
+			}
+			if !strings.Contains(err.Error(), "weaker than application compliance") {
+				t.Fatalf("expected escalation error message, got: %v", err)
+			}
+			return ctx
+		}).
+		Feature()
+
+	testEnv.Test(t, feature)
+}

@@ -306,6 +306,151 @@ func TestCLI_ExportOutputsValidYAML(t *testing.T) {
 	}
 }
 
+func TestCLI_ExportMultiResourceTypes(t *testing.T) {
+	s := testScheme()
+	ns := "multiapp-payments"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "multiapp", Namespace: controlPlaneNamespace, CreationTimestamp: metav1.Now()},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"payments": ns},
+		},
+	}
+	compute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns, CreationTimestamp: metav1.Now()},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Image: "echo-api:latest"},
+	}
+	db := &choristerv1alpha1.ChoDatabase{
+		ObjectMeta: metav1.ObjectMeta{Name: "orders-db", Namespace: ns, CreationTimestamp: metav1.Now()},
+		Spec:       choristerv1alpha1.ChoDatabaseSpec{Engine: "postgres"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app, compute, db).Build()
+
+	tmpDir := t.TempDir()
+	out, err := executeCmdWithClient(fc, "export", "--domain", "payments", "--app", "multiapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export should not error: %v", err)
+	}
+	if !strings.Contains(out, "2 resource(s)") {
+		t.Errorf("expected 2 resources in output, got: %s", out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "payments.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ChoCompute") {
+		t.Errorf("exported YAML should contain ChoCompute")
+	}
+	if !strings.Contains(content, "ChoDatabase") {
+		t.Errorf("exported YAML should contain ChoDatabase")
+	}
+	if !strings.Contains(content, "---") {
+		t.Errorf("exported YAML should contain document separators")
+	}
+}
+
+func TestCLI_ExportStripsRuntimeMetadata(t *testing.T) {
+	s := testScheme()
+	ns := "stripapp-payments"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "stripapp", Namespace: controlPlaneNamespace, CreationTimestamp: metav1.Now()},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"payments": ns},
+		},
+	}
+	compute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "api",
+			Namespace:         ns,
+			ResourceVersion:   "12345",
+			UID:               "abc-123-def",
+			Generation:        3,
+			CreationTimestamp: metav1.Now(),
+		},
+		Spec: choristerv1alpha1.ChoComputeSpec{Image: "echo-api:latest"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app, compute).Build()
+
+	tmpDir := t.TempDir()
+	_, err := executeCmdWithClient(fc, "export", "--domain", "payments", "--app", "stripapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export should not error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "payments.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "resourceVersion") {
+		t.Errorf("exported YAML should not contain resourceVersion")
+	}
+	if strings.Contains(content, "uid:") {
+		t.Errorf("exported YAML should not contain uid")
+	}
+}
+
+func TestCLI_ExportEmptyDomain(t *testing.T) {
+	s := testScheme()
+	ns := "emptyapp-payments"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "emptyapp", Namespace: controlPlaneNamespace, CreationTimestamp: metav1.Now()},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"payments": ns},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app).Build()
+
+	tmpDir := t.TempDir()
+	_, err := executeCmdWithClient(fc, "export", "--domain", "payments", "--app", "emptyapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export should not error for empty domain: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "payments.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	if !strings.Contains(string(data), "No Cho CRDs found") {
+		t.Errorf("expected empty domain placeholder comment, got:\n%s", string(data))
+	}
+}
+
+func TestCLI_ExportRequiresDomainFlag(t *testing.T) {
+	_, err := executeCmd("export")
+	if err == nil {
+		t.Fatal("expected error when --domain is missing")
+	}
+	if !strings.Contains(err.Error(), "--domain is required") {
+		t.Fatalf("expected domain required error, got: %v", err)
+	}
+}
+
 func TestCLI_SetupIdempotent(t *testing.T) {
 	// Dry-run mode validates the command structure without cluster interaction
 	_, err1 := executeCmd("setup", "--dry-run")

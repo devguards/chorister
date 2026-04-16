@@ -186,6 +186,11 @@ func CompileCrossApplicationLink(app *choristerv1alpha1.ChoApplication, link cho
 			"requestsPerMinute": link.RateLimit.RequestsPerMinute,
 		}
 	}
+	if link.CircuitBreaker != nil {
+		envoyConfig.Object["spec"].(map[string]any)["circuitBreaker"] = map[string]any{
+			"consecutiveErrors": link.CircuitBreaker.ConsecutiveErrors,
+		}
+	}
 	if link.Auth != nil {
 		annotations := envoyConfig.GetAnnotations()
 		if annotations == nil {

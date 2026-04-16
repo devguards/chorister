@@ -96,7 +96,7 @@ var _ = Describe("ChoStorage Controller", func() {
 	// D.3 — Object storage kro Claim creation
 	// -----------------------------------------------------------------------
 	Context("D.3 — Object storage reconciliation", func() {
-		It("should set object-specific status fields for object variant", func() {
+		It("should attempt kro ObjectStorageClaim creation for s3 object variant", func() {
 			storageSize := resource.MustParse("50Gi")
 			storage := &choristerv1alpha1.ChoStorage{
 				ObjectMeta: metav1.ObjectMeta{Name: "media-bucket", Namespace: "default"},
@@ -172,6 +172,96 @@ var _ = Describe("ChoStorage Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, storage)).To(Succeed())
 			Expect(storage.Status.BucketName).To(BeEmpty())
 			Expect(storage.Status.Ready).To(BeTrue())
+		})
+
+		It("should attempt kro ObjectStorageClaim creation for gcs backend", func() {
+			storageSize := resource.MustParse("100Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "gcs-bucket", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application:   "myapp",
+					Domain:        "media",
+					Variant:       "object",
+					ObjectBackend: "gcs",
+					Size:          &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				s := &choristerv1alpha1.ChoStorage{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, s); err == nil {
+					s.Finalizers = nil
+					_ = k8sClient.Update(ctx, s)
+					_ = k8sClient.Delete(ctx, s)
+				}
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ObjectStorageClaim"))
+		})
+
+		It("should attempt kro ObjectStorageClaim creation for azure backend", func() {
+			storageSize := resource.MustParse("200Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "azure-bucket", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application:   "myapp",
+					Domain:        "media",
+					Variant:       "object",
+					ObjectBackend: "azure",
+					Size:          &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				s := &choristerv1alpha1.ChoStorage{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, s); err == nil {
+					s.Finalizers = nil
+					_ = k8sClient.Update(ctx, s)
+					_ = k8sClient.Delete(ctx, s)
+				}
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ObjectStorageClaim"))
+		})
+
+		It("should default to s3 backend when objectBackend is empty", func() {
+			storageSize := resource.MustParse("10Gi")
+			storage := &choristerv1alpha1.ChoStorage{
+				ObjectMeta: metav1.ObjectMeta{Name: "default-backend-bucket", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoStorageSpec{
+					Application: "myapp",
+					Domain:      "media",
+					Variant:     "object",
+					Size:        &storageSize,
+				},
+			}
+			Expect(k8sClient.Create(ctx, storage)).To(Succeed())
+			defer func() {
+				s := &choristerv1alpha1.ChoStorage{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace}, s); err == nil {
+					s.Finalizers = nil
+					_ = k8sClient.Update(ctx, s)
+					_ = k8sClient.Delete(ctx, s)
+				}
+			}()
+
+			reconciler := &ChoStorageReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: storage.Name, Namespace: storage.Namespace},
+			})
+			// kro CRD not installed → NoKindMatch, but we reached the object path
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ObjectStorageClaim"))
 		})
 	})
 

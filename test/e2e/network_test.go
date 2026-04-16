@@ -332,6 +332,14 @@ func TestE2E_CrossApplicationLink(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("CiliumEnvoyConfig exists in consumer namespace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			cmd := exec.CommandContext(ctx, "kubectl", "get", "ciliumenvoyconfigs", "-n", retailPaymentsNS, "--no-headers")
+			out, err := cmd.CombinedOutput()
+			if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+				t.Fatalf("no CiliumEnvoyConfig found in %s: %v: %s", retailPaymentsNS, err, out)
+			}
+			return ctx
+		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cleanupApp(ctx, t, retailApp)
 			cleanupApp(ctx, t, capitalApp)

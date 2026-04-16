@@ -17,6 +17,7 @@ limitations under the License.
 package compiler
 
 import (
+	"fmt"
 	"testing"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
@@ -113,13 +114,14 @@ func TestCompileNetwork_CrossApplicationLink(t *testing.T) {
 		},
 	}
 	link := choristerv1alpha1.LinkSpec{
-		Name:         "auth-api",
-		Target:       "platform-app",
-		TargetDomain: "auth",
-		Port:         8443,
-		Consumers:    []string{"payments"},
-		Auth:         &choristerv1alpha1.LinkAuth{Type: "jwt"},
-		RateLimit:    &choristerv1alpha1.LinkRateLimit{RequestsPerMinute: 120},
+		Name:           "auth-api",
+		Target:         "platform-app",
+		TargetDomain:   "auth",
+		Port:           8443,
+		Consumers:      []string{"payments"},
+		Auth:           &choristerv1alpha1.LinkAuth{Type: "jwt"},
+		RateLimit:      &choristerv1alpha1.LinkRateLimit{RequestsPerMinute: 120},
+		CircuitBreaker: &choristerv1alpha1.LinkCircuitBreaker{ConsecutiveErrors: 5},
 	}
 
 	artifacts := CompileCrossApplicationLink(app, link, "payments")
@@ -137,6 +139,46 @@ func TestCompileNetwork_CrossApplicationLink(t *testing.T) {
 	}
 	if artifacts.DirectDenyPolicy.Name == "" {
 		t.Fatal("expected direct deny policy to be named")
+	}
+
+	// CiliumEnvoyConfig GVK
+	gvk := artifacts.CiliumEnvoyConfig.GroupVersionKind()
+	if gvk.Group != "cilium.io" || gvk.Version != "v2" || gvk.Kind != "CiliumEnvoyConfig" {
+		t.Fatalf("expected cilium.io/v2/CiliumEnvoyConfig, got %s", gvk)
+	}
+
+	// CiliumEnvoyConfig namespace is consumer namespace
+	if artifacts.CiliumEnvoyConfig.GetNamespace() != "consumer-app-payments" {
+		t.Fatalf("expected consumer namespace for CiliumEnvoyConfig, got %s", artifacts.CiliumEnvoyConfig.GetNamespace())
+	}
+
+	// Rate-limit value propagated
+	spec := getSpec(t, artifacts.CiliumEnvoyConfig)
+	rl, ok := spec["rateLimit"].(map[string]any)
+	if !ok {
+		t.Fatal("expected rateLimit map in CiliumEnvoyConfig spec")
+	}
+	if fmt.Sprintf("%v", rl["requestsPerMinute"]) != "120" {
+		t.Fatalf("expected requestsPerMinute=120, got %v", rl["requestsPerMinute"])
+	}
+
+	// Circuit-breaker value propagated
+	cb, ok := spec["circuitBreaker"].(map[string]any)
+	if !ok {
+		t.Fatal("expected circuitBreaker map in CiliumEnvoyConfig spec")
+	}
+	if fmt.Sprintf("%v", cb["consecutiveErrors"]) != "5" {
+		t.Fatalf("expected consecutiveErrors=5, got %v", cb["consecutiveErrors"])
+	}
+
+	// services reference supplier namespace
+	svc, _ := spec["services"].([]any)
+	if len(svc) == 0 {
+		t.Fatal("expected at least one service entry")
+	}
+	first := svc[0].(map[string]any)
+	if first["namespace"] != "platform-app-auth" {
+		t.Fatalf("expected service namespace platform-app-auth, got %v", first["namespace"])
 	}
 }
 
