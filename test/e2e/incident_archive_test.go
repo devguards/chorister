@@ -123,6 +123,7 @@ func TestE2E_ArchivedResourceBlocksPromotion(t *testing.T) {
 	const appName = "e2e-archive"
 	const domain = "payments"
 	const sandboxName = "dev"
+	const depSandboxName = "dep-test"
 	prodNS := appName + "-" + domain
 
 	feature := features.New("archived resource blocks promotion").
@@ -155,7 +156,7 @@ func TestE2E_ArchivedResourceBlocksPromotion(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("removing production database archives it and blocks dependent promotions", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("database promoted to production has Active lifecycle", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			// Promote database to production first
 			cmd := exec.CommandContext(ctx, "chorister", "promote",
 				"--domain", domain, "--sandbox", sandboxName, "--app", appName)
@@ -196,6 +197,118 @@ func TestE2E_ArchivedResourceBlocksPromotion(t *testing.T) {
 			if lifecycle != "Active" && lifecycle != "" {
 				t.Logf("database lifecycle: %s (expected Active initially)", lifecycle)
 			}
+			return ctx
+		}).
+		Assess("dependent compute promotion is rejected when database is archived", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Step 1: Remove the database from the sandbox to simulate DSL removal
+			cmd := exec.CommandContext(ctx, "kubectl", "delete", "chodatabases", "archive-db",
+				"-n", fmt.Sprintf("%s-%s-sandbox-%s", appName, domain, sandboxName), "--ignore-not-found")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("delete sandbox database: %v: %s", err, out)
+			}
+
+			// Step 2: Promote again — this should trigger the archive transition
+			// for the database that is no longer in the sandbox
+			cmd = exec.CommandContext(ctx, "chorister", "promote",
+				"--domain", domain, "--sandbox", sandboxName, "--app", appName)
+			out, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("second promote failed: %v: %s", err, out)
+			}
+
+			// Approve the second promotion
+			cmd = exec.CommandContext(ctx, "chorister", "requests",
+				"--domain", domain, "--app", appName, "--status", "pending", "--output", "json")
+			out, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("requests: %v: %s", err, out)
+			}
+			reqID := extractPromotionID(string(out))
+			if reqID != "" {
+				cmd = exec.CommandContext(ctx, "chorister", "approve", reqID)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("approve second: %v: %s", err, out)
+				}
+			}
+
+			// Step 3: Wait for the production database lifecycle to become Archived
+			if err := waitForCondition(ctx, 120*time.Second, 3*time.Second, func() (bool, error) {
+				cmd := exec.CommandContext(ctx, "kubectl", "get", "chodatabases", "-n", prodNS,
+					"-o", "jsonpath={.items[0].status.lifecycle}")
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return false, nil
+				}
+				return strings.TrimSpace(string(out)) == "Archived", nil
+			}); err != nil {
+				t.Fatalf("database did not transition to Archived: %v", err)
+			}
+
+			// Step 4: Create a new sandbox with a ChoCompute referencing the archived db
+			cmd = exec.CommandContext(ctx, "chorister", "sandbox", "create",
+				"--domain", domain, "--name", depSandboxName, "--app", appName)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("sandbox create dep-test: %v: %s", err, out)
+			}
+
+			cmd = exec.CommandContext(ctx, "chorister", "apply",
+				"--domain", domain, "--sandbox", depSandboxName, "--app", appName,
+				"--file", "testdata/archive-compute.yaml")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("apply compute: %v: %s", err, out)
+			}
+
+			// Step 5: Attempt promotion of the dependent compute — should be rejected
+			cmd = exec.CommandContext(ctx, "chorister", "promote",
+				"--domain", domain, "--sandbox", depSandboxName, "--app", appName)
+			promoteOut, promoteErr := cmd.CombinedOutput()
+
+			// The promotion might be rejected at the CLI level or allowed to proceed
+			// and fail during reconciliation. Check both paths.
+			if promoteErr != nil && strings.Contains(strings.ToLower(string(promoteOut)), "archived") {
+				// CLI rejected the promotion directly — pass
+				t.Logf("CLI rejected promotion due to archived dependency: %s", promoteOut)
+				return ctx
+			}
+
+			// If the CLI did not reject, the ChoPromotionRequest should fail during reconciliation
+			cmd = exec.CommandContext(ctx, "chorister", "requests",
+				"--domain", domain, "--app", appName, "--status", "pending", "--output", "json")
+			out, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("requests after dep promote: %v: %s", err, out)
+			}
+			reqID = extractPromotionID(string(out))
+			if reqID != "" {
+				cmd = exec.CommandContext(ctx, "chorister", "approve", reqID)
+				if cOut, cErr := cmd.CombinedOutput(); cErr != nil {
+					t.Logf("approve dep promotion: %v: %s", cErr, cOut)
+				}
+			}
+
+			// Step 6: Wait for the ChoPromotionRequest to reach Failed phase
+			if err := waitForCondition(ctx, 120*time.Second, 3*time.Second, func() (bool, error) {
+				cmd := exec.CommandContext(ctx, "kubectl", "get", "chopromotionrequests",
+					"-n", "cho-system", "-o", "jsonpath={range .items[*]}{.status.phase}{' '}{end}")
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return false, nil
+				}
+				return strings.Contains(string(out), "Failed"), nil
+			}); err != nil {
+				t.Fatalf("expected promotion to fail with ArchivedDependency, but it did not reach Failed phase: %v", err)
+			}
+
+			// Verify the failure reason mentions "archived"
+			cmd = exec.CommandContext(ctx, "kubectl", "get", "chopromotionrequests",
+				"-n", "cho-system", "-o", "json")
+			out, _ = cmd.CombinedOutput()
+			output := strings.ToLower(string(out))
+			if !strings.Contains(output, "archived") {
+				t.Fatalf("expected failure message to mention 'archived', got: %s", string(out))
+			}
+
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
