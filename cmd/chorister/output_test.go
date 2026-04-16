@@ -56,7 +56,7 @@ func TestOutputTable(t *testing.T) {
 }
 
 func TestOutputJSON(t *testing.T) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"name":    "myapp",
 		"phase":   "Ready",
 		"domains": 2,
@@ -68,7 +68,7 @@ func TestOutputJSON(t *testing.T) {
 	}
 
 	// Validate JSON
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\n%s", err, buf.String())
 	}
@@ -78,7 +78,7 @@ func TestOutputJSON(t *testing.T) {
 }
 
 func TestOutputYAML(t *testing.T) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"name":  "myapp",
 		"phase": "Ready",
 	}

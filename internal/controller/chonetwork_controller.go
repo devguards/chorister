@@ -219,8 +219,8 @@ func (r *ChoNetworkReconciler) lookupApplication(ctx context.Context, network *c
 	return nil, false
 }
 
-func getUnstructuredSpec(obj *unstructured.Unstructured) map[string]interface{} {
-	if spec, ok := obj.Object["spec"].(map[string]interface{}); ok {
+func getUnstructuredSpec(obj *unstructured.Unstructured) map[string]any {
+	if spec, ok := obj.Object["spec"].(map[string]any); ok {
 		return spec
 	}
 	return nil

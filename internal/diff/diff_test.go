@@ -27,7 +27,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // buildResource creates a minimal unstructured resource for diff testing.
-func buildResource(name, kind, namespace string, fields map[string]interface{}) *unstructured.Unstructured {
+func buildResource(name, kind, namespace string, fields map[string]any) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetName(name)
 	obj.SetKind(kind)
@@ -43,7 +43,7 @@ func buildResource(name, kind, namespace string, fields map[string]interface{}) 
 
 func TestDiff_Added(t *testing.T) {
 	sandbox := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
@@ -67,7 +67,7 @@ func TestDiff_Added(t *testing.T) {
 func TestDiff_Removed(t *testing.T) {
 	sandbox := []*unstructured.Unstructured{}
 	production := []*unstructured.Unstructured{
-		buildResource("legacy-worker", "Deployment", "myapp-payments", map[string]interface{}{
+		buildResource("legacy-worker", "Deployment", "myapp-payments", map[string]any{
 			"replicas": int64(1),
 		}),
 	}
@@ -86,12 +86,12 @@ func TestDiff_Removed(t *testing.T) {
 
 func TestDiff_Changed(t *testing.T) {
 	sandbox := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(5),
 		}),
 	}
 	production := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
@@ -120,12 +120,12 @@ func TestDiff_Changed(t *testing.T) {
 
 func TestDiff_NoDifferences(t *testing.T) {
 	sandbox := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
 	production := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
@@ -138,12 +138,12 @@ func TestDiff_NoDifferences(t *testing.T) {
 
 func TestDiff_RenameShowsRemoveAndAdd(t *testing.T) {
 	sandbox := []*unstructured.Unstructured{
-		buildResource("api-v2", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
+		buildResource("api-v2", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
 	production := []*unstructured.Unstructured{
-		buildResource("api-v1", "Deployment", "myapp-payments", map[string]interface{}{
+		buildResource("api-v1", "Deployment", "myapp-payments", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
@@ -174,12 +174,12 @@ func TestDiff_CompilationRevisionChange(t *testing.T) {
 	t.Skip("awaiting Phase 19.3: Compilation stability tracking")
 
 	sandbox := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments-sandbox-alice", map[string]any{
 			"replicas": int64(3),
 		}),
 	}
 	production := []*unstructured.Unstructured{
-		buildResource("api", "Deployment", "myapp-payments", map[string]interface{}{
+		buildResource("api", "Deployment", "myapp-payments", map[string]any{
 			"replicas": int64(3),
 		}),
 	}

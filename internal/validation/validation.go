@@ -19,6 +19,7 @@ package validation
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -165,13 +166,11 @@ func ValidateEgressWildcard(network *choristerv1alpha1.ChoNetwork) []string {
 	if network.Spec.Egress == nil {
 		return nil
 	}
-	for _, dest := range network.Spec.Egress.Allowlist {
-		if dest == "*" {
-			return []string{fmt.Sprintf(
-				"ChoNetwork %q: wildcard egress (*) is not permitted. Declare specific destinations.",
-				network.Name,
-			)}
-		}
+	if slices.Contains(network.Spec.Egress.Allowlist, "*") {
+		return []string{fmt.Sprintf(
+			"ChoNetwork %q: wildcard egress (*) is not permitted. Declare specific destinations.",
+			network.Name,
+		)}
 	}
 	return nil
 }
@@ -326,15 +325,15 @@ func ValidateArchivedResourceDependencies(
 
 // ParseRetentionDuration parses a retention duration string (e.g. "30d", "1y", "90d").
 func ParseRetentionDuration(s string) (time.Duration, error) {
-	if strings.HasSuffix(s, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if before, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(before)
 		if err != nil {
 			return 0, fmt.Errorf("invalid days value: %w", err)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	if strings.HasSuffix(s, "y") {
-		years, err := strconv.Atoi(strings.TrimSuffix(s, "y"))
+	if before, ok := strings.CutSuffix(s, "y"); ok {
+		years, err := strconv.Atoi(before)
 		if err != nil {
 			return 0, fmt.Errorf("invalid years value: %w", err)
 		}

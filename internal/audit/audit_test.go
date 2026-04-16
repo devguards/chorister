@@ -244,7 +244,7 @@ func TestMemoryLogger_ConcurrentAccess(t *testing.T) {
 	done := make(chan struct{})
 
 	// Write concurrently
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		go func(n int) {
 			_ = logger.Log(context.Background(), Event{
 				Action:   "test",
@@ -255,7 +255,7 @@ func TestMemoryLogger_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		<-done
 	}
 

@@ -190,14 +190,14 @@ func (r *ChoDatabaseReconciler) handleDeletion(ctx context.Context, db *choriste
 	if db.Status.FinalSnapshotRef == "" {
 		backupName := fmt.Sprintf("final-%s-%s", db.Name, time.Now().Format("20060102-150405"))
 		sgBackup := &unstructured.Unstructured{
-			Object: map[string]interface{}{
+			Object: map[string]any{
 				"apiVersion": "stackgres.io/v1",
 				"kind":       "SGBackup",
-				"metadata": map[string]interface{}{
+				"metadata": map[string]any{
 					"name":      backupName,
 					"namespace": db.Namespace,
 				},
-				"spec": map[string]interface{}{
+				"spec": map[string]any{
 					"sgCluster":        sgClusterName,
 					"managedLifecycle": false,
 				},
@@ -375,41 +375,41 @@ func buildSGCluster(db *choristerv1alpha1.ChoDatabase, name, profileName string,
 	volumeSize := dbVolumeSize(db.Spec.Size)
 
 	sgCluster := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "stackgres.io/v1",
 			"kind":       "SGCluster",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": db.Namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					labelApplication:           db.Spec.Application,
 					labelDomain:                db.Spec.Domain,
 					"chorister.dev/managed-by": "chodatabase-controller",
 				},
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"instances": int64(instances),
-				"postgres": map[string]interface{}{
+				"postgres": map[string]any{
 					"version": "16",
 					"flavor":  "vanilla",
 				},
 				"sgInstanceProfile": profileName,
-				"pods": map[string]interface{}{
-					"persistentVolume": map[string]interface{}{
+				"pods": map[string]any{
+					"persistentVolume": map[string]any{
 						"size": volumeSize,
 					},
 				},
-				"configurations": map[string]interface{}{
+				"configurations": map[string]any{
 					"sgPoolingConfig": "sgpoolingconfig1",
-					"backups": []interface{}{
-						map[string]interface{}{
+					"backups": []any{
+						map[string]any{
 							"sgObjectStorage": "default-backup-storage",
 							"cronSchedule":    "0 3 * * *",
 							"retention":       int64(7),
 						},
 					},
 				},
-				"nonProductionOptions": map[string]interface{}{
+				"nonProductionOptions": map[string]any{
 					"disableClusterPodAntiAffinity": !db.Spec.HA,
 				},
 			},
@@ -423,19 +423,19 @@ func (r *ChoDatabaseReconciler) ensureSGInstanceProfile(ctx context.Context, db 
 	cpu, memory := dbProfileResources(db.Spec.Size)
 
 	desired := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "stackgres.io/v1",
 			"kind":       "SGInstanceProfile",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": db.Namespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					labelApplication:           db.Spec.Application,
 					labelDomain:                db.Spec.Domain,
 					"chorister.dev/managed-by": "chodatabase-controller",
 				},
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"cpu":    cpu,
 				"memory": memory,
 			},

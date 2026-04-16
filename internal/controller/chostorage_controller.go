@@ -145,9 +145,10 @@ func (r *ChoStorageReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ChoStorageReconciler) reconcilePVC(ctx context.Context, storage *choristerv1alpha1.ChoStorage) error {
 	pvcName := storage.Name
 	accessMode := corev1.ReadWriteOnce
-	if storage.Spec.AccessMode == "ReadWriteMany" {
+	switch storage.Spec.AccessMode {
+	case "ReadWriteMany":
 		accessMode = corev1.ReadWriteMany
-	} else if storage.Spec.AccessMode == "ReadOnlyMany" {
+	case "ReadOnlyMany":
 		accessMode = corev1.ReadOnlyMany
 	}
 
@@ -274,7 +275,7 @@ func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, 
 		labelDomain:      storage.Spec.Domain,
 	})
 
-	spec := map[string]interface{}{
+	spec := map[string]any{
 		"bucketName": bucketName,
 		"backend":    backend,
 		"region":     "us-east-1",

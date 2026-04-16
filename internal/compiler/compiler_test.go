@@ -65,9 +65,9 @@ func TestCompileNetwork_IngressHTTPRoute(t *testing.T) {
 		t.Fatalf("expected JWT issuer annotation, got %v", route.GetAnnotations())
 	}
 	spec := getSpec(t, route)
-	rules := spec["rules"].([]interface{})
-	backendRefs := rules[0].(map[string]interface{})["backendRefs"].([]interface{})
-	if backendRefs[0].(map[string]interface{})["port"].(int) != 443 {
+	rules := spec["rules"].([]any)
+	backendRefs := rules[0].(map[string]any)["backendRefs"].([]any)
+	if backendRefs[0].(map[string]any)["port"].(int) != 443 {
 		t.Fatalf("expected backend port 443, got %v", backendRefs[0])
 	}
 }
@@ -89,13 +89,13 @@ func TestCompileNetwork_EgressCiliumPolicy(t *testing.T) {
 		t.Fatalf("expected CiliumNetworkPolicy, got %s", policy.GetKind())
 	}
 	spec := getSpec(t, policy)
-	egress := spec["egress"].([]interface{})
+	egress := spec["egress"].([]any)
 	if len(egress) < 2 {
 		t.Fatalf("expected DNS plus allowlist rules, got %d", len(egress))
 	}
-	allowRule := egress[1].(map[string]interface{})
-	toFQDNs := allowRule["toFQDNs"].([]interface{})
-	if toFQDNs[0].(map[string]interface{})["matchName"] != "api.stripe.com" {
+	allowRule := egress[1].(map[string]any)
+	toFQDNs := allowRule["toFQDNs"].([]any)
+	if toFQDNs[0].(map[string]any)["matchName"] != "api.stripe.com" {
 		t.Fatalf("expected api.stripe.com allowlist, got %v", toFQDNs)
 	}
 }
@@ -140,9 +140,9 @@ func TestCompileNetwork_CrossApplicationLink(t *testing.T) {
 	}
 }
 
-func getSpec(t *testing.T, obj *unstructured.Unstructured) map[string]interface{} {
+func getSpec(t *testing.T, obj *unstructured.Unstructured) map[string]any {
 	t.Helper()
-	spec, ok := obj.Object["spec"].(map[string]interface{})
+	spec, ok := obj.Object["spec"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected spec map, got %T", obj.Object["spec"])
 	}
@@ -183,12 +183,12 @@ func TestCompileRestrictedDomainL7Policy(t *testing.T) {
 	}
 
 	spec := getSpec(t, policy)
-	ingress, ok := spec["ingress"].([]interface{})
+	ingress, ok := spec["ingress"].([]any)
 	if !ok || len(ingress) != 1 {
 		t.Fatalf("expected 1 ingress rule, got %v", spec["ingress"])
 	}
 
-	rule, ok := ingress[0].(map[string]interface{})
+	rule, ok := ingress[0].(map[string]any)
 	if !ok {
 		t.Fatal("expected ingress rule to be a map")
 	}
@@ -254,7 +254,7 @@ func TestCompileTetragonTracingPolicy(t *testing.T) {
 	}
 
 	spec := getSpec(t, policy)
-	kprobes, ok := spec["kprobes"].([]interface{})
+	kprobes, ok := spec["kprobes"].([]any)
 	if !ok || len(kprobes) < 2 {
 		t.Fatalf("expected at least 2 kprobes, got %v", spec["kprobes"])
 	}
@@ -294,7 +294,7 @@ func TestCompileCertManagerCertificate(t *testing.T) {
 		t.Errorf("expected secretName api-tls-secret, got %v", spec["secretName"])
 	}
 
-	issuerRef, ok := spec["issuerRef"].(map[string]interface{})
+	issuerRef, ok := spec["issuerRef"].(map[string]any)
 	if !ok {
 		t.Fatal("expected issuerRef map")
 	}
@@ -305,7 +305,7 @@ func TestCompileCertManagerCertificate(t *testing.T) {
 		t.Errorf("expected issuer kind ClusterIssuer, got %v", issuerRef["kind"])
 	}
 
-	dnsNames, ok := spec["dnsNames"].([]interface{})
+	dnsNames, ok := spec["dnsNames"].([]any)
 	if !ok || len(dnsNames) != 2 {
 		t.Fatalf("expected 2 DNS names, got %v", spec["dnsNames"])
 	}
@@ -352,24 +352,24 @@ func TestCompileCiliumEncryptionPolicy(t *testing.T) {
 	}
 
 	spec := getSpec(t, policy)
-	ingress, ok := spec["ingress"].([]interface{})
+	ingress, ok := spec["ingress"].([]any)
 	if !ok || len(ingress) != 1 {
 		t.Fatalf("expected 1 ingress rule, got %v", spec["ingress"])
 	}
 
-	rule := ingress[0].(map[string]interface{})
-	auth, ok := rule["authentication"].(map[string]interface{})
+	rule := ingress[0].(map[string]any)
+	auth, ok := rule["authentication"].(map[string]any)
 	if !ok || auth["mode"] != "required" {
 		t.Error("expected authentication mode=required in ingress")
 	}
 
-	egress, ok := spec["egress"].([]interface{})
+	egress, ok := spec["egress"].([]any)
 	if !ok || len(egress) != 1 {
 		t.Fatalf("expected 1 egress rule, got %v", spec["egress"])
 	}
 
-	egressRule := egress[0].(map[string]interface{})
-	egressAuth, ok := egressRule["authentication"].(map[string]interface{})
+	egressRule := egress[0].(map[string]any)
+	egressAuth, ok := egressRule["authentication"].(map[string]any)
 	if !ok || egressAuth["mode"] != "required" {
 		t.Error("expected authentication mode=required in egress")
 	}
@@ -419,7 +419,7 @@ func TestCompileObjectStorageRGD_S3(t *testing.T) {
 	}
 
 	spec := getSpec(t, rgd)
-	schemaField, ok := spec["schema"].(map[string]interface{})
+	schemaField, ok := spec["schema"].(map[string]any)
 	if !ok {
 		t.Fatal("expected schema field in spec")
 	}
@@ -427,7 +427,7 @@ func TestCompileObjectStorageRGD_S3(t *testing.T) {
 		t.Errorf("expected schema kind ObjectStorageClaim, got %v", schemaField["kind"])
 	}
 
-	schemaSpec, ok := schemaField["spec"].(map[string]interface{})
+	schemaSpec, ok := schemaField["spec"].(map[string]any)
 	if !ok {
 		t.Fatal("expected spec in schema")
 	}
@@ -438,15 +438,15 @@ func TestCompileObjectStorageRGD_S3(t *testing.T) {
 		t.Errorf("expected size 50Gi, got %v", schemaSpec["size"])
 	}
 
-	resources, ok := spec["resources"].([]interface{})
+	resources, ok := spec["resources"].([]any)
 	if !ok || len(resources) != 1 {
 		t.Fatalf("expected 1 resource, got %v", spec["resources"])
 	}
-	res := resources[0].(map[string]interface{})
+	res := resources[0].(map[string]any)
 	if res["id"] != "bucket" {
 		t.Errorf("expected resource id bucket, got %v", res["id"])
 	}
-	tmpl := res["template"].(map[string]interface{})
+	tmpl := res["template"].(map[string]any)
 	if tmpl["apiVersion"] != "s3.aws.upbound.io/v1beta1" {
 		t.Errorf("expected s3 apiVersion, got %v", tmpl["apiVersion"])
 	}
@@ -470,8 +470,8 @@ func TestCompileObjectStorageRGD_GCS(t *testing.T) {
 
 	rgd := CompileObjectStorageRGD(storage)
 	spec := getSpec(t, rgd)
-	resources := spec["resources"].([]interface{})
-	tmpl := resources[0].(map[string]interface{})["template"].(map[string]interface{})
+	resources := spec["resources"].([]any)
+	tmpl := resources[0].(map[string]any)["template"].(map[string]any)
 	if tmpl["apiVersion"] != "storage.gcp.upbound.io/v1beta1" {
 		t.Errorf("expected gcs apiVersion, got %v", tmpl["apiVersion"])
 	}
@@ -491,7 +491,7 @@ func TestCompileObjectStorageRGD_DefaultSize(t *testing.T) {
 
 	rgd := CompileObjectStorageRGD(storage)
 	spec := getSpec(t, rgd)
-	schemaSpec := spec["schema"].(map[string]interface{})["spec"].(map[string]interface{})
+	schemaSpec := spec["schema"].(map[string]any)["spec"].(map[string]any)
 	if schemaSpec["size"] != "10Gi" {
 		t.Errorf("expected default size 10Gi, got %v", schemaSpec["size"])
 	}

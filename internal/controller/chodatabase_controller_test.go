@@ -344,18 +344,18 @@ var _ = Describe("ChoDatabase Controller", func() {
 			Expect(sgCluster.GetName()).To(Equal("payments-main"))
 			Expect(sgCluster.GetNamespace()).To(Equal("myapp-payments"))
 
-			spec, ok := sgCluster.Object["spec"].(map[string]interface{})
+			spec, ok := sgCluster.Object["spec"].(map[string]any)
 			Expect(ok).To(BeTrue())
 			Expect(spec["instances"]).To(Equal(int64(2)))
 
-			postgres := spec["postgres"].(map[string]interface{})
+			postgres := spec["postgres"].(map[string]any)
 			Expect(postgres["version"]).To(Equal("16"))
 
-			pods := spec["pods"].(map[string]interface{})
-			pv := pods["persistentVolume"].(map[string]interface{})
+			pods := spec["pods"].(map[string]any)
+			pv := pods["persistentVolume"].(map[string]any)
 			Expect(pv["size"]).To(Equal("50Gi"))
 
-			nonProd := spec["nonProductionOptions"].(map[string]interface{})
+			nonProd := spec["nonProductionOptions"].(map[string]any)
 			Expect(nonProd["disableClusterPodAntiAffinity"]).To(BeFalse())
 		})
 
@@ -372,14 +372,14 @@ var _ = Describe("ChoDatabase Controller", func() {
 			}
 			sgCluster := buildSGCluster(db, "dev-test", "dev-test", 1)
 
-			spec := sgCluster.Object["spec"].(map[string]interface{})
+			spec := sgCluster.Object["spec"].(map[string]any)
 			Expect(spec["instances"]).To(Equal(int64(1)))
 
-			pods := spec["pods"].(map[string]interface{})
-			pv := pods["persistentVolume"].(map[string]interface{})
+			pods := spec["pods"].(map[string]any)
+			pv := pods["persistentVolume"].(map[string]any)
 			Expect(pv["size"]).To(Equal("10Gi"))
 
-			nonProd := spec["nonProductionOptions"].(map[string]interface{})
+			nonProd := spec["nonProductionOptions"].(map[string]any)
 			Expect(nonProd["disableClusterPodAntiAffinity"]).To(BeTrue())
 		})
 
@@ -395,12 +395,12 @@ var _ = Describe("ChoDatabase Controller", func() {
 			}
 			sgCluster := buildSGCluster(db, "data-main", "data-main", 1)
 
-			spec := sgCluster.Object["spec"].(map[string]interface{})
-			configs := spec["configurations"].(map[string]interface{})
-			backups := configs["backups"].([]interface{})
-			Expect(len(backups)).To(Equal(1))
+			spec := sgCluster.Object["spec"].(map[string]any)
+			configs := spec["configurations"].(map[string]any)
+			backups := configs["backups"].([]any)
+			Expect(backups).To(HaveLen(1))
 
-			backup := backups[0].(map[string]interface{})
+			backup := backups[0].(map[string]any)
 			Expect(backup["cronSchedule"]).To(Equal("0 3 * * *"))
 			Expect(backup["retention"]).To(Equal(int64(7)))
 		})

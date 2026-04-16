@@ -95,11 +95,12 @@ func ComplianceReport(ctx context.Context, q *query.Querier, app *choristerv1alp
 		Description: "Non-root container enforcement via Gatekeeper constraints",
 		Evidence:    "Gatekeeper operator status: " + gatekeeperStatus,
 	}
-	if gatekeeperStatus == "installed" || gatekeeperStatus == "Ready" {
+	switch gatekeeperStatus {
+	case "installed", "Ready":
 		check1.Status = "Pass"
-	} else if gatekeeperStatus == "Unknown" {
+	case "Unknown":
 		check1.Status = "Fail"
-	} else {
+	default:
 		check1.Status = "Fail"
 	}
 	result.Checks = append(result.Checks, check1)
@@ -144,12 +145,13 @@ func ComplianceReport(ctx context.Context, q *query.Querier, app *choristerv1alp
 			Description: "CIS Kubernetes Benchmark (kube-bench)",
 			Evidence:    "Result: " + cisBenchmark,
 		}
-		if cisBenchmark == "" {
+		switch cisBenchmark {
+		case "":
 			check4.Status = "Fail"
 			check4.Evidence = "kube-bench has not run; schedule via ChoCluster.spec.operators"
-		} else if cisBenchmark == "Pass" || cisBenchmark == "pass" {
+		case "Pass", "pass":
 			check4.Status = "Pass"
-		} else {
+		default:
 			check4.Status = "Fail"
 		}
 		result.Checks = append(result.Checks, check4)

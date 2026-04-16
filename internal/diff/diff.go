@@ -146,7 +146,7 @@ func compareSpecs(a, b *unstructured.Unstructured) []string {
 }
 
 // collectDiffs recursively finds field-level differences between two maps.
-func collectDiffs(prefix string, a, b map[string]interface{}, changed *[]string) {
+func collectDiffs(prefix string, a, b map[string]any, changed *[]string) {
 	allKeys := make(map[string]bool)
 	for k := range a {
 		allKeys[k] = true
@@ -165,8 +165,8 @@ func collectDiffs(prefix string, a, b map[string]interface{}, changed *[]string)
 			continue
 		}
 
-		aMap, aIsMap := aVal.(map[string]interface{})
-		bMap, bIsMap := bVal.(map[string]interface{})
+		aMap, aIsMap := aVal.(map[string]any)
+		bMap, bIsMap := bVal.(map[string]any)
 		if aIsMap && bIsMap {
 			collectDiffs(path, aMap, bMap, changed)
 			continue

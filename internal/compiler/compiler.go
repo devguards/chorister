@@ -57,23 +57,23 @@ func CompileIngressHTTPRoute(network *choristerv1alpha1.ChoNetwork) *unstructure
 		annotations["chorister.dev/jwt-audiences"] = strings.Join(network.Spec.Ingress.Auth.JWT.Audience, ",")
 	}
 	route.SetAnnotations(annotations)
-	route.Object["spec"] = map[string]interface{}{
-		"parentRefs": []interface{}{
-			map[string]interface{}{"name": "chorister-internet-gateway"},
+	route.Object["spec"] = map[string]any{
+		"parentRefs": []any{
+			map[string]any{"name": "chorister-internet-gateway"},
 		},
-		"hostnames": []interface{}{fmt.Sprintf("%s-%s.chorister.internal", network.Spec.Application, network.Spec.Domain)},
-		"rules": []interface{}{
-			map[string]interface{}{
-				"matches": []interface{}{
-					map[string]interface{}{
-						"path": map[string]interface{}{
+		"hostnames": []any{fmt.Sprintf("%s-%s.chorister.internal", network.Spec.Application, network.Spec.Domain)},
+		"rules": []any{
+			map[string]any{
+				"matches": []any{
+					map[string]any{
+						"path": map[string]any{
 							"type":  "PathPrefix",
 							"value": "/",
 						},
 					},
 				},
-				"backendRefs": []interface{}{
-					map[string]interface{}{
+				"backendRefs": []any{
+					map[string]any{
 						"name": network.Name,
 						"port": network.Spec.Ingress.Port,
 					},
@@ -86,9 +86,9 @@ func CompileIngressHTTPRoute(network *choristerv1alpha1.ChoNetwork) *unstructure
 
 func CompileEgressCiliumPolicy(network *choristerv1alpha1.ChoNetwork) *unstructured.Unstructured {
 	policy := newUnstructured(ciliumNetworkPolicyGVK, network.Namespace, network.Name+"-egress")
-	policy.Object["spec"] = map[string]interface{}{
-		"endpointSelector": map[string]interface{}{
-			"matchLabels": map[string]interface{}{
+	policy.Object["spec"] = map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]any{
 				"chorister.dev/application": network.Spec.Application,
 				"chorister.dev/domain":      network.Spec.Domain,
 			},
@@ -104,12 +104,12 @@ func CompileCrossApplicationLink(app *choristerv1alpha1.ChoApplication, link cho
 	baseName := fmt.Sprintf("link-%s-%s", link.Name, consumerDomain)
 
 	httpRoute := newUnstructured(httpRouteGVK, consumerNamespace, baseName)
-	httpRoute.Object["spec"] = map[string]interface{}{
-		"parentRefs": []interface{}{map[string]interface{}{"name": "chorister-internal-gateway"}},
-		"rules": []interface{}{
-			map[string]interface{}{
-				"backendRefs": []interface{}{
-					map[string]interface{}{
+	httpRoute.Object["spec"] = map[string]any{
+		"parentRefs": []any{map[string]any{"name": "chorister-internal-gateway"}},
+		"rules": []any{
+			map[string]any{
+				"backendRefs": []any{
+					map[string]any{
 						"name":      link.TargetDomain,
 						"namespace": targetNamespace,
 						"port":      link.Port,
@@ -120,16 +120,16 @@ func CompileCrossApplicationLink(app *choristerv1alpha1.ChoApplication, link cho
 	}
 
 	referenceGrant := newUnstructured(referenceGrantGVK, targetNamespace, baseName)
-	referenceGrant.Object["spec"] = map[string]interface{}{
-		"from": []interface{}{
-			map[string]interface{}{
+	referenceGrant.Object["spec"] = map[string]any{
+		"from": []any{
+			map[string]any{
 				"group":     "gateway.networking.k8s.io",
 				"kind":      "HTTPRoute",
 				"namespace": consumerNamespace,
 			},
 		},
-		"to": []interface{}{
-			map[string]interface{}{
+		"to": []any{
+			map[string]any{
 				"group": "",
 				"kind":  "Service",
 				"name":  link.TargetDomain,
@@ -138,26 +138,26 @@ func CompileCrossApplicationLink(app *choristerv1alpha1.ChoApplication, link cho
 	}
 
 	ciliumPolicy := newUnstructured(ciliumNetworkPolicyGVK, consumerNamespace, baseName)
-	ciliumPolicy.Object["spec"] = map[string]interface{}{
-		"endpointSelector": map[string]interface{}{
-			"matchLabels": map[string]interface{}{
+	ciliumPolicy.Object["spec"] = map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]any{
 				"chorister.dev/application": app.Name,
 				"chorister.dev/domain":      consumerDomain,
 			},
 		},
-		"egress": []interface{}{
-			map[string]interface{}{
-				"toEndpoints": []interface{}{
-					map[string]interface{}{
-						"matchLabels": map[string]interface{}{
+		"egress": []any{
+			map[string]any{
+				"toEndpoints": []any{
+					map[string]any{
+						"matchLabels": map[string]any{
 							"k8s:io.kubernetes.pod.namespace": targetNamespace,
 						},
 					},
 				},
-				"toPorts": []interface{}{
-					map[string]interface{}{
-						"ports": []interface{}{
-							map[string]interface{}{"port": fmt.Sprintf("%d", link.Port), "protocol": "TCP"},
+				"toPorts": []any{
+					map[string]any{
+						"ports": []any{
+							map[string]any{"port": fmt.Sprintf("%d", link.Port), "protocol": "TCP"},
 						},
 					},
 				},
@@ -166,23 +166,23 @@ func CompileCrossApplicationLink(app *choristerv1alpha1.ChoApplication, link cho
 	}
 
 	envoyConfig := newUnstructured(ciliumEnvoyConfigGVK, consumerNamespace, baseName)
-	envoyConfig.Object["spec"] = map[string]interface{}{
-		"services": []interface{}{
-			map[string]interface{}{
+	envoyConfig.Object["spec"] = map[string]any{
+		"services": []any{
+			map[string]any{
 				"name":      link.TargetDomain,
 				"namespace": targetNamespace,
 			},
 		},
-		"backendServices": []interface{}{
-			map[string]interface{}{
+		"backendServices": []any{
+			map[string]any{
 				"name":      link.TargetDomain,
 				"namespace": targetNamespace,
 			},
 		},
-		"rateLimit": map[string]interface{}{},
+		"rateLimit": map[string]any{},
 	}
 	if link.RateLimit != nil {
-		envoyConfig.Object["spec"].(map[string]interface{})["rateLimit"] = map[string]interface{}{
+		envoyConfig.Object["spec"].(map[string]any)["rateLimit"] = map[string]any{
 			"requestsPerMinute": link.RateLimit.RequestsPerMinute,
 		}
 	}
@@ -241,29 +241,29 @@ func CompileRestrictedDomainL7Policy(app *choristerv1alpha1.ChoApplication, doma
 	policy := newUnstructured(ciliumNetworkPolicyGVK, nsName, policyName)
 
 	// Build L7 HTTP rules from supplies + consumes
-	var httpRules []interface{}
+	var httpRules []any
 	if domain.Supplies != nil {
-		httpRules = append(httpRules, map[string]interface{}{
+		httpRules = append(httpRules, map[string]any{
 			"method": "GET",
 			"path":   "/.*",
 		})
 	}
 
-	ingressRules := []interface{}{
-		map[string]interface{}{
-			"fromEndpoints": []interface{}{
-				map[string]interface{}{
-					"matchLabels": map[string]interface{}{
+	ingressRules := []any{
+		map[string]any{
+			"fromEndpoints": []any{
+				map[string]any{
+					"matchLabels": map[string]any{
 						"chorister.dev/application": app.Name,
 					},
 				},
 			},
-			"toPorts": []interface{}{
-				map[string]interface{}{
-					"ports": []interface{}{
-						map[string]interface{}{"port": fmt.Sprintf("%d", suppliesPort(domain)), "protocol": "TCP"},
+			"toPorts": []any{
+				map[string]any{
+					"ports": []any{
+						map[string]any{"port": fmt.Sprintf("%d", suppliesPort(domain)), "protocol": "TCP"},
 					},
-					"rules": map[string]interface{}{
+					"rules": map[string]any{
 						"http": httpRules,
 					},
 				},
@@ -271,9 +271,9 @@ func CompileRestrictedDomainL7Policy(app *choristerv1alpha1.ChoApplication, doma
 		},
 	}
 
-	policy.Object["spec"] = map[string]interface{}{
-		"endpointSelector": map[string]interface{}{
-			"matchLabels": map[string]interface{}{
+	policy.Object["spec"] = map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]any{
 				"chorister.dev/application": app.Name,
 				"chorister.dev/domain":      domain.Name,
 			},
@@ -307,52 +307,52 @@ func CompileTetragonTracingPolicy(app *choristerv1alpha1.ChoApplication, domain 
 		"chorister.dev/component":   "runtime-security",
 	})
 
-	policy.Object["spec"] = map[string]interface{}{
-		"kprobes": []interface{}{
-			map[string]interface{}{
+	policy.Object["spec"] = map[string]any{
+		"kprobes": []any{
+			map[string]any{
 				"call":    "sys_execve",
 				"syscall": true,
-				"args": []interface{}{
-					map[string]interface{}{
+				"args": []any{
+					map[string]any{
 						"index": 0,
 						"type":  "string",
 					},
 				},
-				"selectors": []interface{}{
-					map[string]interface{}{
-						"matchNamespaces": []interface{}{
-							map[string]interface{}{
+				"selectors": []any{
+					map[string]any{
+						"matchNamespaces": []any{
+							map[string]any{
 								"namespace": nsName,
 								"operator":  "In",
-								"values":    []interface{}{nsName},
+								"values":    []any{nsName},
 							},
 						},
 					},
 				},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"call":    "sys_openat",
 				"syscall": true,
-				"args": []interface{}{
-					map[string]interface{}{
+				"args": []any{
+					map[string]any{
 						"index": 1,
 						"type":  "string",
 					},
 				},
-				"selectors": []interface{}{
-					map[string]interface{}{
-						"matchNamespaces": []interface{}{
-							map[string]interface{}{
+				"selectors": []any{
+					map[string]any{
+						"matchNamespaces": []any{
+							map[string]any{
 								"namespace": nsName,
 								"operator":  "In",
-								"values":    []interface{}{nsName},
+								"values":    []any{nsName},
 							},
 						},
-						"matchArgs": []interface{}{
-							map[string]interface{}{
+						"matchArgs": []any{
+							map[string]any{
 								"index":    1,
 								"operator": "Prefix",
-								"values":   []interface{}{"/etc/shadow", "/etc/passwd"},
+								"values":   []any{"/etc/shadow", "/etc/passwd"},
 							},
 						},
 					},
@@ -378,14 +378,14 @@ func CompileCertManagerCertificate(app *choristerv1alpha1.ChoApplication, domain
 		"chorister.dev/domain":      domain.Name,
 	})
 
-	cert.Object["spec"] = map[string]interface{}{
+	cert.Object["spec"] = map[string]any{
 		"secretName": fmt.Sprintf("%s-tls-secret", domain.Name),
-		"issuerRef": map[string]interface{}{
+		"issuerRef": map[string]any{
 			"name":  "chorister-cluster-issuer",
 			"kind":  "ClusterIssuer",
 			"group": "cert-manager.io",
 		},
-		"dnsNames": []interface{}{
+		"dnsNames": []any{
 			fmt.Sprintf("%s-%s.chorister.internal", app.Name, domain.Name),
 			fmt.Sprintf("*.%s-%s.chorister.internal", app.Name, domain.Name),
 		},
@@ -410,37 +410,37 @@ func CompileCiliumEncryptionPolicy(app *choristerv1alpha1.ChoApplication, domain
 		"chorister.dev/encryption": "wireguard",
 	})
 
-	policy.Object["spec"] = map[string]interface{}{
-		"endpointSelector": map[string]interface{}{
-			"matchLabels": map[string]interface{}{
+	policy.Object["spec"] = map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]any{
 				"chorister.dev/application": app.Name,
 				"chorister.dev/domain":      domain.Name,
 			},
 		},
-		"ingress": []interface{}{
-			map[string]interface{}{
-				"fromEndpoints": []interface{}{
-					map[string]interface{}{
-						"matchLabels": map[string]interface{}{
+		"ingress": []any{
+			map[string]any{
+				"fromEndpoints": []any{
+					map[string]any{
+						"matchLabels": map[string]any{
 							"chorister.dev/application": app.Name,
 						},
 					},
 				},
-				"authentication": map[string]interface{}{
+				"authentication": map[string]any{
 					"mode": "required",
 				},
 			},
 		},
-		"egress": []interface{}{
-			map[string]interface{}{
-				"toEndpoints": []interface{}{
-					map[string]interface{}{
-						"matchLabels": map[string]interface{}{
+		"egress": []any{
+			map[string]any{
+				"toEndpoints": []any{
+					map[string]any{
+						"matchLabels": map[string]any{
 							"chorister.dev/application": app.Name,
 						},
 					},
 				},
-				"authentication": map[string]interface{}{
+				"authentication": map[string]any{
 					"mode": "required",
 				},
 			},
@@ -450,14 +450,14 @@ func CompileCiliumEncryptionPolicy(app *choristerv1alpha1.ChoApplication, domain
 	return policy
 }
 
-func compileEgressRules(spec *choristerv1alpha1.NetworkEgressSpec) []interface{} {
-	rules := []interface{}{
-		map[string]interface{}{
-			"toPorts": []interface{}{
-				map[string]interface{}{
-					"ports": []interface{}{
-						map[string]interface{}{"port": "53", "protocol": "UDP"},
-						map[string]interface{}{"port": "53", "protocol": "TCP"},
+func compileEgressRules(spec *choristerv1alpha1.NetworkEgressSpec) []any {
+	rules := []any{
+		map[string]any{
+			"toPorts": []any{
+				map[string]any{
+					"ports": []any{
+						map[string]any{"port": "53", "protocol": "UDP"},
+						map[string]any{"port": "53", "protocol": "TCP"},
 					},
 				},
 			},
@@ -467,12 +467,12 @@ func compileEgressRules(spec *choristerv1alpha1.NetworkEgressSpec) []interface{}
 		return rules
 	}
 	for _, host := range spec.Allowlist {
-		rules = append(rules, map[string]interface{}{
-			"toFQDNs": []interface{}{map[string]interface{}{"matchName": host}},
-			"toPorts": []interface{}{
-				map[string]interface{}{
-					"ports": []interface{}{
-						map[string]interface{}{"port": "443", "protocol": "TCP"},
+		rules = append(rules, map[string]any{
+			"toFQDNs": []any{map[string]any{"matchName": host}},
+			"toPorts": []any{
+				map[string]any{
+					"ports": []any{
+						map[string]any{"port": "443", "protocol": "TCP"},
 					},
 				},
 			},
@@ -502,35 +502,35 @@ func CompileObjectStorageRGD(storage *choristerv1alpha1.ChoStorage) *unstructure
 		backend = "s3"
 	}
 
-	rgd.Object["spec"] = map[string]interface{}{
-		"schema": map[string]interface{}{
+	rgd.Object["spec"] = map[string]any{
+		"schema": map[string]any{
 			"apiVersion": "v1alpha1",
 			"kind":       "ObjectStorageClaim",
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"backend": backend,
 				"size":    sizeStr,
-				"application": map[string]interface{}{
+				"application": map[string]any{
 					"name":   storage.Spec.Application,
 					"domain": storage.Spec.Domain,
 				},
 			},
-			"status": map[string]interface{}{
+			"status": map[string]any{
 				"endpoint":             "",
 				"bucketName":           "",
 				"credentialsSecretRef": "",
 			},
 		},
-		"resources": []interface{}{
-			map[string]interface{}{
+		"resources": []any{
+			map[string]any{
 				"id": "bucket",
-				"template": map[string]interface{}{
+				"template": map[string]any{
 					"apiVersion": crossplaneAPIVersion(backend),
 					"kind":       crossplaneKind(backend),
-					"metadata": map[string]interface{}{
+					"metadata": map[string]any{
 						"name": fmt.Sprintf("%s-%s-%s", storage.Spec.Application, storage.Spec.Domain, storage.Name),
 					},
-					"spec": map[string]interface{}{
-						"forProvider": map[string]interface{}{
+					"spec": map[string]any{
+						"forProvider": map[string]any{
 							"region": "us-east-1",
 						},
 					},

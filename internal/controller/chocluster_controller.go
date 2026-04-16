@@ -627,7 +627,7 @@ func (r *ChoClusterReconciler) reconcileGrafanaDashboards(ctx context.Context, c
 }
 
 func generateDashboardJSON(appName, domainName string) string {
-	dashboard := map[string]interface{}{
+	dashboard := map[string]any{
 		"editable":      true,
 		"schemaVersion": 39,
 		"tags":          []string{"chorister", appName, domainName},
@@ -635,7 +635,7 @@ func generateDashboardJSON(appName, domainName string) string {
 		"uid":           fmt.Sprintf("cho-%s-%s", appName, domainName),
 		"version":       1,
 		"time":          map[string]string{"from": "now-6h", "to": "now"},
-		"panels": []map[string]interface{}{
+		"panels": []map[string]any{
 			{
 				"title":       "Pod Status",
 				"type":        "stat",
@@ -673,8 +673,8 @@ func (r *ChoClusterReconciler) reconcileCertManager(ctx context.Context, cluster
 	issuer := &unstructured.Unstructured{}
 	issuer.SetGroupVersionKind(certManagerClusterIssuerGVK)
 	issuer.SetName("chorister-cluster-issuer")
-	issuer.Object["spec"] = map[string]interface{}{
-		"selfSigned": map[string]interface{}{},
+	issuer.Object["spec"] = map[string]any{
+		"selfSigned": map[string]any{},
 	}
 
 	return ensureUnstructured(ctx, r.Client, issuer)

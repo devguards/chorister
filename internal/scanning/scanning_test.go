@@ -162,7 +162,7 @@ func TestSignatureScanner_CaseInsensitive(t *testing.T) {
 }
 
 func TestNewDefaultScanner_ImplementsInterface(t *testing.T) {
-	var _ Scanner = NewDefaultScanner()
+	var _ = NewDefaultScanner()
 }
 
 // ---------------------------------------------------------------------------

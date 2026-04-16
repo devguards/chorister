@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -170,6 +171,21 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 				ObservedGeneration: pr.Generation,
 			})
 			log.Info("Promotion blocked: domain is isolated", "name", pr.Name, "domain", pr.Spec.Domain)
+			return ctrl.Result{}, r.Status().Update(ctx, pr)
+		}
+
+		// Check for archived dependencies in the production namespace
+		prodNs := fmt.Sprintf("%s-%s", pr.Spec.Application, pr.Spec.Domain)
+		if archivedErrs := r.checkArchivedDependencies(ctx, prodNs); len(archivedErrs) > 0 {
+			pr.Status.Phase = "Failed"
+			setCondition(&pr.Status.Conditions, metav1.Condition{
+				Type:               "Failed",
+				Status:             metav1.ConditionTrue,
+				Reason:             "ArchivedDependency",
+				Message:            fmt.Sprintf("Promotion blocked: %s", archivedErrs[0]),
+				ObservedGeneration: pr.Generation,
+			})
+			log.Info("Promotion blocked: archived dependencies found", "name", pr.Name, "errors", archivedErrs)
 			return ctrl.Result{}, r.Status().Update(ctx, pr)
 		}
 
@@ -491,12 +507,7 @@ func (r *ChoPromotionRequestReconciler) ensureResourceInNamespace(
 }
 
 func isRoleAllowed(role string, allowed []string) bool {
-	for _, r := range allowed {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, role)
 }
 
 func (r *ChoPromotionRequestReconciler) getScanner() scanning.Scanner {
@@ -787,6 +798,27 @@ func (r *ChoPromotionRequestReconciler) archiveOrphanedCaches(
 		log.Info("Archived orphaned ChoCache", "name", c.Name, "namespace", prodNs)
 	}
 	return nil
+}
+
+// checkArchivedDependencies lists stateful resources in the production namespace
+// and returns validation errors if any are in the Archived lifecycle state.
+func (r *ChoPromotionRequestReconciler) checkArchivedDependencies(ctx context.Context, prodNs string) []string {
+	databases := &choristerv1alpha1.ChoDatabaseList{}
+	if err := r.List(ctx, databases, client.InNamespace(prodNs)); err != nil {
+		return []string{fmt.Sprintf("listing production ChoDatabases: %v", err)}
+	}
+
+	queues := &choristerv1alpha1.ChoQueueList{}
+	if err := r.List(ctx, queues, client.InNamespace(prodNs)); err != nil {
+		return []string{fmt.Sprintf("listing production ChoQueues: %v", err)}
+	}
+
+	storages := &choristerv1alpha1.ChoStorageList{}
+	if err := r.List(ctx, storages, client.InNamespace(prodNs)); err != nil {
+		return []string{fmt.Sprintf("listing production ChoStorages: %v", err)}
+	}
+
+	return validation.ValidateArchivedResourceDependencies(databases.Items, queues.Items, storages.Items)
 }
 
 // getArchiveRetention returns the archive retention duration from the application policy.

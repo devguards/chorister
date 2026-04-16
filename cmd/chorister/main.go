@@ -294,71 +294,71 @@ func installCRDs(cmd *cobra.Command, c client.Client, crdDir string) (int, error
 // setupControllerDeployment returns a Deployment for the controller manager.
 func setupControllerDeployment(image string) *unstructured.Unstructured {
 	dep := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "apps/v1",
 			"kind":       "Deployment",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      "chorister-controller-manager",
 				"namespace": controlPlaneNamespace,
-				"labels": map[string]interface{}{
+				"labels": map[string]any{
 					"control-plane":                "controller-manager",
 					"app.kubernetes.io/name":       "chorister",
 					"app.kubernetes.io/managed-by": "chorister-cli",
 				},
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"replicas": int64(1),
-				"selector": map[string]interface{}{
-					"matchLabels": map[string]interface{}{
+				"selector": map[string]any{
+					"matchLabels": map[string]any{
 						"control-plane":          "controller-manager",
 						"app.kubernetes.io/name": "chorister",
 					},
 				},
-				"template": map[string]interface{}{
-					"metadata": map[string]interface{}{
-						"labels": map[string]interface{}{
+				"template": map[string]any{
+					"metadata": map[string]any{
+						"labels": map[string]any{
 							"control-plane":          "controller-manager",
 							"app.kubernetes.io/name": "chorister",
 						},
 					},
-					"spec": map[string]interface{}{
-						"securityContext": map[string]interface{}{
+					"spec": map[string]any{
+						"securityContext": map[string]any{
 							"runAsNonRoot": true,
 						},
 						"serviceAccountName":            "controller-manager",
 						"terminationGracePeriodSeconds": int64(10),
-						"containers": []interface{}{
-							map[string]interface{}{
+						"containers": []any{
+							map[string]any{
 								"name":    "manager",
 								"image":   image,
-								"command": []interface{}{"/manager"},
-								"args":    []interface{}{"--leader-elect", "--health-probe-bind-address=:8081"},
-								"securityContext": map[string]interface{}{
+								"command": []any{"/manager"},
+								"args":    []any{"--leader-elect", "--health-probe-bind-address=:8081"},
+								"securityContext": map[string]any{
 									"readOnlyRootFilesystem":   true,
 									"allowPrivilegeEscalation": false,
 								},
-								"livenessProbe": map[string]interface{}{
-									"httpGet": map[string]interface{}{
+								"livenessProbe": map[string]any{
+									"httpGet": map[string]any{
 										"path": "/healthz",
 										"port": int64(8081),
 									},
 									"initialDelaySeconds": int64(15),
 									"periodSeconds":       int64(20),
 								},
-								"readinessProbe": map[string]interface{}{
-									"httpGet": map[string]interface{}{
+								"readinessProbe": map[string]any{
+									"httpGet": map[string]any{
 										"path": "/readyz",
 										"port": int64(8081),
 									},
 									"initialDelaySeconds": int64(5),
 									"periodSeconds":       int64(10),
 								},
-								"resources": map[string]interface{}{
-									"limits": map[string]interface{}{
+								"resources": map[string]any{
+									"limits": map[string]any{
 										"cpu":    "500m",
 										"memory": "128Mi",
 									},
-									"requests": map[string]interface{}{
+									"requests": map[string]any{
 										"cpu":    "10m",
 										"memory": "64Mi",
 									},
@@ -516,10 +516,7 @@ func runLogin(cmd *cobra.Command, issuerURL, clientID string) error {
 	fmt.Fprintf(out, "Waiting for authentication...\n")
 
 	// 4. Poll for token
-	interval := time.Duration(deviceCode.Interval) * time.Second
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
-	}
+	interval := max(time.Duration(deviceCode.Interval)*time.Second, 5*time.Second)
 	deadline := time.Now().Add(time.Duration(deviceCode.ExpiresIn) * time.Second)
 
 	var tokenResult struct {
@@ -1325,7 +1322,7 @@ Use --rollback to revert production to its previous compiled state. Rollback and
 			}
 
 			if rollback {
-				pr.ObjectMeta.GenerateName = fmt.Sprintf("%s-%s-rollback-", app, domain)
+				pr.GenerateName = fmt.Sprintf("%s-%s-rollback-", app, domain)
 				// Sandbox is empty for rollback requests; controller interprets this as rollback
 			}
 
@@ -3631,7 +3628,7 @@ func runExport(cmd *cobra.Command, appName, domain, outputDir string) error {
 	sep := []byte("---\n")
 
 	const apiVersion = "chorister.dev/v1alpha1"
-	appendYAML := func(kind string, obj interface{}) error {
+	appendYAML := func(kind string, obj any) error {
 		data, merr := yaml.Marshal(obj)
 		if merr != nil {
 			return fmt.Errorf("marshal %s: %w", kind, merr)
@@ -3693,7 +3690,7 @@ func runExport(cmd *cobra.Command, appName, domain, outputDir string) error {
 	}
 
 	if len(buf) == 0 {
-		buf = []byte(fmt.Sprintf("# chorister export: app=%s domain=%s namespace=%s\n# No Cho CRDs found in domain namespace.\n", appName, domain, ns))
+		buf = fmt.Appendf(nil, "# chorister export: app=%s domain=%s namespace=%s\n# No Cho CRDs found in domain namespace.\n", appName, domain, ns)
 	}
 
 	if err := os.WriteFile(outputPath, buf, 0o600); err != nil {

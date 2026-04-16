@@ -364,11 +364,11 @@ var _ = Describe("ChoNetwork Controller", func() {
 			Expect(policy.GetNamespace()).To(Equal("restricted-cnp-app-secrets"))
 			Expect(policy.GetName()).To(Equal("secrets-l7-restricted"))
 
-			spec, ok := policy.Object["spec"].(map[string]interface{})
+			spec, ok := policy.Object["spec"].(map[string]any)
 			Expect(ok).To(BeTrue())
 			Expect(spec).To(HaveKey("endpointSelector"))
 
-			ingress, ok := spec["ingress"].([]interface{})
+			ingress, ok := spec["ingress"].([]any)
 			Expect(ok).To(BeTrue())
 			Expect(ingress).To(HaveLen(1))
 		})
@@ -414,10 +414,10 @@ var _ = Describe("ChoNetwork Controller", func() {
 			cnp.SetAPIVersion("cilium.io/v2")
 			cnp.SetKind("CiliumNetworkPolicy")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "external-egress", Namespace: ns.Name}, cnp)).To(Succeed())
-			egress := cnp.Object["spec"].(map[string]interface{})["egress"].([]interface{})
+			egress := cnp.Object["spec"].(map[string]any)["egress"].([]any)
 			Expect(egress).To(HaveLen(2))
-			fqdnRule := egress[1].(map[string]interface{})["toFQDNs"].([]interface{})
-			Expect(fqdnRule[0].(map[string]interface{})["matchName"]).To(Equal("api.stripe.com"))
+			fqdnRule := egress[1].(map[string]any)["toFQDNs"].([]any)
+			Expect(fqdnRule[0].(map[string]any)["matchName"]).To(Equal("api.stripe.com"))
 		})
 
 		It("should produce HTTPRoute + ReferenceGrant + deny policy for cross-app links", func() {

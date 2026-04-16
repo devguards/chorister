@@ -40,7 +40,7 @@ func getOutputFormat(cmd *cobra.Command) string {
 
 // renderOutput dispatches to the appropriate formatter based on --output flag.
 // data is the structured object (for json/yaml), tableData is for table output.
-func renderOutput(w io.Writer, format string, data interface{}, tableData *report.TableData) error {
+func renderOutput(w io.Writer, format string, data any, tableData *report.TableData) error {
 	switch format {
 	case "json":
 		return renderJSON(w, data)
@@ -57,14 +57,14 @@ func renderOutput(w io.Writer, format string, data interface{}, tableData *repor
 }
 
 // renderJSON marshals data as indented JSON.
-func renderJSON(w io.Writer, data interface{}) error {
+func renderJSON(w io.Writer, data any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(data)
 }
 
 // renderYAML marshals data as YAML.
-func renderYAML(w io.Writer, data interface{}) error {
+func renderYAML(w io.Writer, data any) error {
 	b, err := yaml.Marshal(data)
 	if err != nil {
 		return err

@@ -62,7 +62,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
 			// Reconcile multiple times (finalizer add, then actual reconcile)
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -104,7 +104,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			Expect(k8sClient.Create(ctx, sandbox)).To(Succeed())
 
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -151,7 +151,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			Expect(k8sClient.Create(ctx, sandbox)).To(Succeed())
 
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -166,7 +166,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			Expect(k8sClient.Delete(ctx, sandbox)).To(Succeed())
 
 			// Reconcile deletion
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -279,7 +279,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
 			// Reconcile to set up sandbox and initialize lastApplyTime
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -355,7 +355,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			defer func() { _ = k8sClient.Delete(ctx, sandbox) }()
 
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox.Name, Namespace: sandbox.Namespace},
 				})
@@ -459,7 +459,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			defer func() { _ = k8sClient.Delete(ctx, sandbox1) }()
 
 			reconciler := &ChoSandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox1.Name, Namespace: sandbox1.Namespace},
 				})
@@ -506,7 +506,7 @@ var _ = Describe("ChoSandbox Controller", func() {
 			Expect(k8sClient.Create(ctx, sandbox2)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, sandbox2) }()
 
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: sandbox2.Name, Namespace: sandbox2.Namespace},
 				})

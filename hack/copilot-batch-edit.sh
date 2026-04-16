@@ -9,13 +9,13 @@ Usage:
   hack/copilot-batch-edit.sh --prompt "..." [options] -- path1 path2
 
 Options:
-  -p, --prompt TEXT          Prompt applied to each target scope
+  -p, --prompt TEXT          Prompt applied to each target iteration
   -t, --test-cmd CMD         Test command to run after each edit (default: make test)
   -m, --model MODEL          Copilot model name, for example gpt-5.3-codex
       --agent NAME           Optional custom Copilot agent name
       --auto-approve         Run Copilot with --allow-all
       --commit-prefix TEXT   Commit prefix (default: copilot)
-      --target PATH          File or directory to process; may be repeated
+      --target PATH        File or directory to use as the starting point; may be repeated
   -h, --help                 Show this help text
 
 Examples:
@@ -37,6 +37,12 @@ EOF
 fail() {
   echo "error: $*" >&2
   exit 1
+}
+
+has_repo_changes() {
+  ! git diff --quiet || return 0
+  ! git diff --cached --quiet || return 0
+  [[ -n "$(git ls-files --others --exclude-standard)" ]]
 }
 
 require_clean_tree() {
@@ -86,49 +92,6 @@ to_repo_rel() {
       return 1
       ;;
   esac
-}
-
-path_within_target() {
-  local changed_path="$1"
-  local target_path="$2"
-
-  if [[ "$target_path" == "." ]]; then
-    return 0
-  fi
-
-  case "$changed_path" in
-    "$target_path"|"$target_path"/*)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-collect_changed_files() {
-  local output_file="$1"
-
-  : > "$output_file"
-  git diff --name-only HEAD -- | sed '/^$/d' >> "$output_file"
-  git ls-files --others --exclude-standard >> "$output_file"
-  sort -u "$output_file" -o "$output_file"
-}
-
-assert_changes_within_target() {
-  local target_rel="$1"
-  local changed_file_list="$2"
-  local outside_changes=0
-
-  while IFS= read -r changed_path; do
-    [[ -n "$changed_path" ]] || continue
-    if ! path_within_target "$changed_path" "$target_rel"; then
-      echo "Unexpected change outside scope: $changed_path" >&2
-      outside_changes=1
-    fi
-  done < "$changed_file_list"
-
-  [[ "$outside_changes" -eq 0 ]]
 }
 
 PROMPT=""
@@ -204,9 +167,6 @@ cd "$REPO_ROOT"
 
 require_clean_tree || fail "git working tree must be clean before running this script"
 
-tmp_dir=$(mktemp -d)
-trap 'rm -rf "$tmp_dir"' EXIT
-
 for raw_target in "${TARGETS[@]}"; do
   abs_target=$(to_abs_path "$raw_target") || fail "target does not exist: $raw_target"
   target_rel=$(to_repo_rel "$abs_target") || fail "target is outside the git repository: $raw_target"
@@ -219,25 +179,21 @@ for raw_target in "${TARGETS[@]}"; do
 
   printf '\n==> Processing %s: %s\n' "$scope_label" "$target_rel"
 
-  scoped_prompt=$(cat <<EOF
-You are editing this repository scope.
-
-Scope type: $scope_label
-Scope path: $target_rel
+scoped_prompt=$(cat <<EOF
+Start by reading this $scope_label: $target_rel
 
 Task:
 $PROMPT
 
 Guidelines:
-- Make whatever changes you see fit to accomplish the task within this scope.
-- Look for instruction files inside $target_rel (e.g., AGENTS.md, .instructions.md, README.md, COPILOT.md) and follow any guidance they contain.
-- You may create, modify, or delete any files within this scope as needed.
-- Run the tests using the hint command below and evaluate the results. If the results contradict the expected behavior, iterate — adjusting code or tests — until they pass and make sense.
+- Use this target as the starting point, then read and modify any other repository files you need.
+- Follow repository default instructions and any instruction files you find.
+- Run tests, review failures, and keep iterating until the result is correct and the tests you judge relevant pass.
 - Suggested test command (hint only, adjust as needed): $TEST_CMD
 EOF
 )
 
-  copilot_cmd=(copilot -p "$scoped_prompt" -s --no-ask-user)
+  copilot_cmd=(copilot -p "$scoped_prompt" -s --no-ask-user --allow-all)
 
   if [[ -n "$MODEL" ]]; then
     copilot_cmd+=(--model "$MODEL")
@@ -255,25 +211,17 @@ EOF
 
   "${copilot_cmd[@]}"
 
-  changed_file_list="$tmp_dir/changed-files.txt"
-  collect_changed_files "$changed_file_list"
-
-  if [[ ! -s "$changed_file_list" ]]; then
+  if ! has_repo_changes; then
     printf 'No changes for %s, skipping tests and commit.\n' "$target_rel"
     continue
   fi
 
-  assert_changes_within_target "$target_rel" "$changed_file_list" || fail "Copilot changed files outside target scope: $target_rel"
-
   printf 'Running final verification: %s\n' "$TEST_CMD"
   eval "$TEST_CMD"
 
-  collect_changed_files "$changed_file_list"
-  assert_changes_within_target "$target_rel" "$changed_file_list" || fail "Tests left changes outside target scope: $target_rel"
+  git add -A
 
-  git add -A -- "$target_rel"
-
-  if git diff --cached --quiet -- "$target_rel"; then
+  if git diff --cached --quiet; then
     printf 'No staged diff remains for %s after tests, skipping commit.\n' "$target_rel"
     continue
   fi

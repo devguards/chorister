@@ -136,7 +136,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
 			// Reconcile → Approved → Executing → Completed
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
 				})
@@ -382,7 +382,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
 			// Reconcile through full lifecycle
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
 				})
@@ -467,7 +467,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
 				})
@@ -701,7 +701,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
 			// Reconcile through full lifecycle
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -773,7 +773,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -791,6 +791,117 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 	// -----------------------------------------------------------------------
 	// Gap 4 — ChoCache archiving during promotion
 	// -----------------------------------------------------------------------
+	// -----------------------------------------------------------------------
+	// Gap 2 — Archived resource blocks dependent promotions
+	// -----------------------------------------------------------------------
+	Context("Gap 2 — Archived resource blocks dependent promotions", func() {
+		It("should block promotion when production has archived dependencies", func() {
+			ctx := context.Background()
+
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-arch-dep-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"admin@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"org-admin"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, app) }()
+
+			prodNs := "promo-arch-dep-app-payments"
+			sandboxNs := "promo-arch-dep-app-payments-sandbox-dev"
+			for _, nsName := range []string{prodNs, sandboxNs} {
+				Expect(ensureNamespaceExists(ctx, nsName)).To(Succeed())
+			}
+
+			// Create an Archived ChoDatabase in the production namespace
+			archivedDB := &choristerv1alpha1.ChoDatabase{
+				ObjectMeta: metav1.ObjectMeta{Name: "archive-db", Namespace: prodNs},
+				Spec: choristerv1alpha1.ChoDatabaseSpec{
+					Application: "promo-arch-dep-app",
+					Domain:      "payments",
+					Engine:      "postgres",
+				},
+			}
+			Expect(k8sClient.Create(ctx, archivedDB)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, archivedDB) }()
+
+			// Set the database status to Archived
+			now := metav1.Now()
+			archivedDB.Status.Lifecycle = "Archived"
+			archivedDB.Status.ArchivedAt = &now
+			archivedDB.Status.Ready = false
+			Expect(k8sClient.Status().Update(ctx, archivedDB)).To(Succeed())
+
+			// Create a ChoCompute in sandbox referencing the archived database
+			compute := &choristerv1alpha1.ChoCompute{
+				ObjectMeta: metav1.ObjectMeta{Name: "api-server", Namespace: sandboxNs},
+				Spec: choristerv1alpha1.ChoComputeSpec{
+					Application: "promo-arch-dep-app",
+					Domain:      "payments",
+					Image:       "nginx:1.25",
+					Replicas:    int32Ptr(1),
+				},
+			}
+			Expect(k8sClient.Create(ctx, compute)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, compute) }()
+
+			pr := &choristerv1alpha1.ChoPromotionRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: "promo-arch-dep-test", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoPromotionRequestSpec{
+					Application: "promo-arch-dep-app",
+					Domain:      "payments",
+					Sandbox:     "dev",
+					RequestedBy: "dev@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pr) }()
+
+			reconciler := &ChoPromotionRequestReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Reconcile → Pending
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add approval
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			pr.Status.Approvals = []choristerv1alpha1.PromotionApproval{
+				{Approver: "admin@example.com", Role: "org-admin", ApprovedAt: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
+
+			// Reconcile — should fail with ArchivedDependency
+			for range 5 {
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}, pr)).To(Succeed())
+			Expect(pr.Status.Phase).To(Equal("Failed"))
+
+			// Verify condition reason is ArchivedDependency
+			var found bool
+			for _, c := range pr.Status.Conditions {
+				if c.Reason == "ArchivedDependency" {
+					found = true
+					Expect(c.Message).To(ContainSubstring("archive-db"))
+					Expect(c.Message).To(ContainSubstring("archived"))
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected ArchivedDependency condition reason")
+		})
+	})
+
 	Context("Gap 4 — ChoCache archive lifecycle during promotion", func() {
 		It("should archive orphaned ChoCache resources in production", func() {
 			ctx := context.Background()
@@ -864,7 +975,7 @@ var _ = Describe("ChoPromotionRequest Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, pr)).To(Succeed())
 
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pr.Name, Namespace: pr.Namespace}})
 				Expect(err).NotTo(HaveOccurred())
 			}
