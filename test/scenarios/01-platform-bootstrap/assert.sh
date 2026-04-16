@@ -23,6 +23,21 @@ assert_setup_dry_run() {
   assert_contains "$output" "Dry run" "setup --dry-run prints Dry run message"
 }
 
+assert_setup_idempotent() {
+  local rc=0
+  # First actual setup
+  cho setup 2>&1 || rc=$?
+  assert_exit_ok "$rc" "chorister setup exits 0 (first run)"
+
+  # Second setup — idempotent, should also succeed
+  rc=0
+  cho setup 2>&1 || rc=$?
+  assert_exit_ok "$rc" "chorister setup exits 0 (second run — idempotent)"
+
+  # Verify CRDs still registered after double setup
+  assert_crds_registered
+}
+
 # ── 01-assert-cli-version ─────────────────────────────────────────────────────
 
 assert_cli_version() {
@@ -129,6 +144,7 @@ main() {
   echo "--- Scenario 01: Platform Bootstrap ---"
 
   assert_setup_dry_run
+  assert_setup_idempotent
   assert_cli_version
   assert_crds_registered
   assert_app_list_empty

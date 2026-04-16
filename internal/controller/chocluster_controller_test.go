@@ -617,6 +617,100 @@ var _ = Describe("ChoCluster Controller", func() {
 		})
 	})
 
+	// -----------------------------------------------------------------------
+	// Idempotency tests
+	// -----------------------------------------------------------------------
+	Context("Idempotency", func() {
+		It("should produce same result when reconciled twice with operators and observability", func() {
+			cluster := &choristerv1alpha1.ChoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "idemp-cluster"},
+				Spec: choristerv1alpha1.ChoClusterSpec{
+					Operators: &choristerv1alpha1.OperatorVersions{
+						Kro:       "latest",
+						Dragonfly: "latest",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cluster) }()
+
+			reconciler := &ChoClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				AuditLogger: audit.NewNoopLogger(),
+			}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cluster.Name}}
+
+			// First reconcile
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Capture ResourceVersions of key child resources
+			rvs := map[string]string{}
+
+			// Operator Deployments
+			for _, def := range []struct{ name, ns string }{
+				{"kro-operator", "cho-kro-system"},
+				{"dragonfly-operator", "cho-dragonfly-system"},
+			} {
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: def.name, Namespace: def.ns}, deploy)).To(Succeed())
+				rvs[def.ns+"/"+def.name] = deploy.ResourceVersion
+			}
+
+			// Monitoring Deployments
+			for _, name := range []string{"loki", "grafana"} {
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, deploy)).To(Succeed())
+				rvs["cho-monitoring/"+name] = deploy.ResourceVersion
+			}
+
+			// Monitoring Services
+			for _, name := range []string{"loki", "grafana"} {
+				svc := &corev1.Service{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, svc)).To(Succeed())
+				rvs["cho-monitoring/svc-"+name] = svc.ResourceVersion
+			}
+
+			// Verify first reconcile result
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Status.Phase).To(Equal("Ready"))
+
+			// Second reconcile
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify status still Ready
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cluster.Name}, cluster)).To(Succeed())
+			Expect(cluster.Status.Phase).To(Equal("Ready"))
+
+			// Verify ResourceVersions unchanged — no resource churn
+			for _, def := range []struct{ name, ns string }{
+				{"kro-operator", "cho-kro-system"},
+				{"dragonfly-operator", "cho-dragonfly-system"},
+			} {
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: def.name, Namespace: def.ns}, deploy)).To(Succeed())
+				Expect(deploy.ResourceVersion).To(Equal(rvs[def.ns+"/"+def.name]),
+					"operator Deployment %s/%s should not be updated on second reconcile", def.ns, def.name)
+			}
+
+			for _, name := range []string{"loki", "grafana"} {
+				deploy := &appsv1.Deployment{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, deploy)).To(Succeed())
+				Expect(deploy.ResourceVersion).To(Equal(rvs["cho-monitoring/"+name]),
+					"monitoring Deployment %s should not be updated on second reconcile", name)
+			}
+
+			for _, name := range []string{"loki", "grafana"} {
+				svc := &corev1.Service{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "cho-monitoring"}, svc)).To(Succeed())
+				Expect(svc.ResourceVersion).To(Equal(rvs["cho-monitoring/svc-"+name]),
+					"monitoring Service %s should not be updated on second reconcile", name)
+			}
+		})
+	})
+
 	Context("Phase 16.1 — cert-manager ClusterIssuer", func() {
 		It("should create ClusterIssuer when cert-manager is configured", func() {
 			cluster := &choristerv1alpha1.ChoCluster{
