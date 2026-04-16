@@ -425,6 +425,86 @@ var _ = Describe("ChoDomainMembership Controller", func() {
 			}, prodRb)).To(Succeed())
 			Expect(prodRb.RoleRef.Name).To(Equal("view"))
 		})
+
+		// -----------------------------------------------------------------------
+		// Gap 21 — Sandbox ownership enforcement
+		// -----------------------------------------------------------------------
+
+		It("should only grant RoleBinding in sandbox owned by the member (Gap 21)", func() {
+			cleanup := setupAppAndNamespace("gap21-app", "eng", "internal")
+			defer cleanup()
+
+			// Create two sandboxes: alice's and bob's
+			aliceSbNs := "gap21-app-eng-sandbox-alice"
+			bobSbNs := "gap21-app-eng-sandbox-bob"
+			for _, ns := range []string{aliceSbNs, bobSbNs} {
+				Expect(k8sClient.Create(ctx, &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{Name: ns},
+				})).To(Succeed())
+			}
+			defer func() {
+				for _, ns := range []string{aliceSbNs, bobSbNs} {
+					_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
+				}
+			}()
+
+			aliceSandbox := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{Name: "gap21-alice-sb", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "gap21-app",
+					Domain:      "eng",
+					Name:        "alice",
+					Owner:       "alice@example.com",
+				},
+			}
+			bobSandbox := &choristerv1alpha1.ChoSandbox{
+				ObjectMeta: metav1.ObjectMeta{Name: "gap21-bob-sb", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoSandboxSpec{
+					Application: "gap21-app",
+					Domain:      "eng",
+					Name:        "bob",
+					Owner:       "bob@example.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, aliceSandbox)).To(Succeed())
+			Expect(k8sClient.Create(ctx, bobSandbox)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, aliceSandbox)
+				_ = k8sClient.Delete(ctx, bobSandbox)
+			}()
+
+			// Alice's membership
+			membership := &choristerv1alpha1.ChoDomainMembership{
+				ObjectMeta: metav1.ObjectMeta{Name: "gap21-alice-membership", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoDomainMembershipSpec{
+					Application: "gap21-app",
+					Domain:      "eng",
+					Identity:    "alice@example.com",
+					Role:        "developer",
+				},
+			}
+			Expect(k8sClient.Create(ctx, membership)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, membership) }()
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: membership.Name, Namespace: membership.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Alice should have a RoleBinding in her own sandbox
+			aliceRb := &rbacv1.RoleBinding{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-gap21-alice-membership", Namespace: aliceSbNs,
+			}, aliceRb)).To(Succeed(), "alice should have RoleBinding in her own sandbox")
+
+			// Alice should NOT have a RoleBinding in Bob's sandbox
+			bobRb := &rbacv1.RoleBinding{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: "membership-gap21-alice-membership", Namespace: bobSbNs,
+			}, bobRb)
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"alice should NOT have a RoleBinding in bob's sandbox")
+		})
 	})
 })
 

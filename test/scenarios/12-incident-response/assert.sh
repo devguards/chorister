@@ -76,15 +76,15 @@ assert_crash_loop_flags_degraded() {
     sleep 5; elapsed=$((elapsed + 5))
   done
 
-  # Check ChoApplication status for Degraded condition (controller must implement this)
+  # Check ChoApplication status for DomainHealthy condition (controller sets DomainHealthy-{domain})
   local cond
   cond=$(kctl get choapplications scen12-myapp -n cho-system \
-    -o jsonpath='{.status.conditions[?(@.type=="Degraded")].status}' \
+    -o jsonpath="{.status.conditions[?(@.type==\"DomainHealthy-${DOMAIN}\")].status}" \
     2>/dev/null || echo "")
-  if [[ "$cond" == "True" ]]; then
-    _assert_pass "ChoApplication status shows Degraded condition"
+  if [[ "$cond" == "False" ]]; then
+    _assert_pass "ChoApplication status shows DomainHealthy-${DOMAIN} condition False (degraded)"
   else
-    _assert_fail "ChoApplication status shows Degraded condition" "condition not set or not True"
+    _assert_fail "ChoApplication status shows DomainHealthy-${DOMAIN} condition False (degraded)" "condition not set or not False (got: ${cond})"
   fi
 }
 

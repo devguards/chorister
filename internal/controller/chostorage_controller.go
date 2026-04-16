@@ -290,6 +290,9 @@ func (r *ChoStorageReconciler) reconcileObjectStorageClaim(ctx context.Context, 
 	err := r.Get(ctx, types.NamespacedName{Name: claimName, Namespace: storage.Namespace}, existing)
 	if errors.IsNotFound(err) {
 		log.Info("Creating kro ObjectStorageClaim", "name", claimName, "backend", backend)
+		if err := controllerutil.SetControllerReference(storage, desired, r.Scheme); err != nil {
+			return err
+		}
 		return r.Create(ctx, desired)
 	}
 	if err != nil {

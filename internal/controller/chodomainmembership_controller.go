@@ -150,6 +150,10 @@ func (r *ChoDomainMembershipReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	for _, sb := range sandboxList.Items {
 		if sb.Spec.Application == membership.Spec.Application && sb.Spec.Domain == membership.Spec.Domain {
+			// Only grant access to the sandbox owned by this member (Gap 21)
+			if sb.Spec.Owner != membership.Spec.Identity {
+				continue
+			}
 			sbNs := SandboxNamespace(sb.Spec.Application, sb.Spec.Domain, sb.Spec.Name)
 			sbRbName := fmt.Sprintf("membership-%s", membership.Name)
 			if err := r.ensureRoleBinding(ctx, membership, sbRbName, sbNs, clusterRole); err != nil {

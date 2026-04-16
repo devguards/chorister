@@ -915,4 +915,136 @@ var _ = Describe("ChoApplication Controller", func() {
 			Expect(controllerutil.ContainsFinalizer(app, applicationFinalizerName)).To(BeTrue())
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Gap 19 — Egress health monitoring
+	// -----------------------------------------------------------------------
+	Context("Gap 19 — Egress health monitoring", func() {
+		It("should initialise egressHealth entries for declared egress targets", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "egress-health-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+						Network: &choristerv1alpha1.AppNetworkPolicy{
+							Egress: &choristerv1alpha1.EgressPolicy{
+								Allowlist: []choristerv1alpha1.EgressTarget{
+									{Host: "api.stripe.com", Port: 443},
+									{Host: "logs.datadog.com", Port: 443},
+								},
+							},
+						},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "payments"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			Expect(app.Status.EgressHealth).NotTo(BeNil())
+			Expect(app.Status.EgressHealth).To(HaveKey("api.stripe.com:443"))
+			Expect(app.Status.EgressHealth).To(HaveKey("logs.datadog.com:443"))
+			Expect(app.Status.EgressHealth["api.stripe.com:443"].Status).To(Equal("Healthy"))
+			Expect(app.Status.EgressHealth["api.stripe.com:443"].LastChecked).NotTo(BeNil())
+		})
+
+		It("should set DomainHealthy condition to False when a pod is not ready (Gap 18/19 degraded path)", func() {
+			app := &choristerv1alpha1.ChoApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "degraded-domain-app", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoApplicationSpec{
+					Owners: []string{"owner@example.com"},
+					Policy: choristerv1alpha1.ApplicationPolicy{
+						Compliance: "essential",
+						Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"developer"}},
+					},
+					Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)
+				controllerutil.RemoveFinalizer(app, applicationFinalizerName)
+				_ = k8sClient.Update(ctx, app)
+				_ = k8sClient.Delete(ctx, app)
+			}()
+
+			reconciler := &ChoApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AuditLogger: audit.NewNoopLogger()}
+			// First reconcile creates domain namespace
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create a pod in the domain namespace with Ready=False
+			allowPrivEsc := false
+			runAsNonRoot := true
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "crash-pod",
+					Namespace: "degraded-domain-app-api",
+					Labels:    map[string]string{"app": "crash"},
+				},
+				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{{
+						Name:  "app",
+						Image: "nginx:latest",
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: &allowPrivEsc,
+							Capabilities: &corev1.Capabilities{
+								Drop: []corev1.Capability{"ALL"},
+							},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, pod) }()
+
+			// Patch pod status to Ready=False
+			pod.Status.Conditions = []corev1.PodCondition{{
+				Type:   corev1.PodReady,
+				Status: corev1.ConditionFalse,
+				Reason: "ContainersNotReady",
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			// Second reconcile — should detect unhealthy pod
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			var found bool
+			for _, c := range app.Status.Conditions {
+				if c.Type == "DomainHealthy-api" {
+					Expect(c.Status).To(Equal(metav1.ConditionFalse))
+					Expect(c.Reason).To(Equal("Degraded"))
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected DomainHealthy-api condition with Degraded reason")
+		})
+	})
 })

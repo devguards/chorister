@@ -2042,3 +2042,171 @@ func TestLogin_NoDeviceEndpoint(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Gap 25 — chorister export GitOps coverage
+// ---------------------------------------------------------------------------
+
+func TestCLI_Export_MultiResourceType(t *testing.T) {
+	s := testScheme()
+	ns := "multiapp-data"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "multiapp", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "data"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"data": ns},
+		},
+	}
+	compute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
+		Spec:       choristerv1alpha1.ChoComputeSpec{Image: "api:latest"},
+	}
+	database := &choristerv1alpha1.ChoDatabase{
+		ObjectMeta: metav1.ObjectMeta{Name: "main-db", Namespace: ns},
+		Spec:       choristerv1alpha1.ChoDatabaseSpec{Engine: "postgres"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app, compute, database).Build()
+
+	tmpDir := t.TempDir()
+	_, err := executeCmdWithClient(fc, "export", "--domain", "data", "--app", "multiapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export should not error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "data.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ChoCompute") {
+		t.Errorf("exported YAML should contain ChoCompute kind, got:\n%s", content)
+	}
+	if !strings.Contains(content, "ChoDatabase") {
+		t.Errorf("exported YAML should contain ChoDatabase kind, got:\n%s", content)
+	}
+	if !strings.Contains(content, "---") {
+		t.Errorf("multi-document export should have --- separators, got:\n%s", content)
+	}
+}
+
+func TestCLI_Export_RuntimeMetadataStripped(t *testing.T) {
+	s := testScheme()
+	ns := "stripapp-api"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "stripapp", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "api"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"api": ns},
+		},
+	}
+	compute := &choristerv1alpha1.ChoCompute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "api-service",
+			Namespace:       ns,
+			ResourceVersion: "12345",
+			UID:             types.UID("some-uid-value"),
+			Generation:      3,
+		},
+		Spec: choristerv1alpha1.ChoComputeSpec{Image: "api:latest"},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app, compute).Build()
+
+	tmpDir := t.TempDir()
+	_, err := executeCmdWithClient(fc, "export", "--domain", "api", "--app", "stripapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export should not error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "api.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "resourceVersion") {
+		t.Errorf("exported YAML should not contain resourceVersion, got:\n%s", content)
+	}
+	if strings.Contains(content, "some-uid-value") {
+		t.Errorf("exported YAML should not contain uid, got:\n%s", content)
+	}
+	if strings.Contains(content, "managedFields") {
+		t.Errorf("exported YAML should not contain managedFields, got:\n%s", content)
+	}
+}
+
+func TestCLI_Export_EmptyDomain(t *testing.T) {
+	s := testScheme()
+	ns := "emptyapp-frontend"
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "emptyapp", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "frontend"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		Status: choristerv1alpha1.ChoApplicationStatus{
+			DomainNamespaces: map[string]string{"frontend": ns},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app).Build()
+
+	tmpDir := t.TempDir()
+	_, err := executeCmdWithClient(fc, "export", "--domain", "frontend", "--app", "emptyapp", "--output", tmpDir)
+	if err != nil {
+		t.Fatalf("export with empty domain should not error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "frontend.yaml"))
+	if err != nil {
+		t.Fatalf("export output file should exist even for empty domain: %v", err)
+	}
+	if !strings.Contains(string(data), "No Cho CRDs found") {
+		t.Errorf("empty domain export should contain placeholder comment, got:\n%s", string(data))
+	}
+}
+
+func TestCLI_Export_MissingDomainFlag(t *testing.T) {
+	_, err := executeCmd("export", "--app", "myapp", "--output", t.TempDir())
+	if err == nil {
+		t.Fatal("export without --domain should return an error")
+	}
+}
+
+func TestCLI_Export_UnresolvedNamespace(t *testing.T) {
+	s := testScheme()
+	// App exists but status.domainNamespaces does NOT contain the requested domain
+	app := &choristerv1alpha1.ChoApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "nonamespace-app", Namespace: controlPlaneNamespace},
+		Spec: choristerv1alpha1.ChoApplicationSpec{
+			Owners:  []string{"admin@example.com"},
+			Domains: []choristerv1alpha1.DomainSpec{{Name: "backend"}},
+			Policy: choristerv1alpha1.ApplicationPolicy{
+				Compliance: "essential",
+				Promotion:  choristerv1alpha1.PromotionPolicy{RequiredApprovers: 1, AllowedRoles: []string{"domain-admin"}},
+			},
+		},
+		// Status intentionally left empty — no domainNamespaces populated
+	}
+	fc := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(app).WithObjects(app).Build()
+
+	_, err := executeCmdWithClient(fc, "export", "--domain", "backend", "--app", "nonamespace-app", "--output", t.TempDir())
+	if err == nil {
+		t.Fatal("export for unresolved namespace should return an error")
+	}
+}

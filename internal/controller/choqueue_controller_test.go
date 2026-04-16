@@ -368,4 +368,83 @@ var _ = Describe("ChoQueue Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue(), "expected no StatefulSet when revision mismatches")
 		})
 	})
+
+	// -----------------------------------------------------------------------
+	// Gap 16 — Streaming queue variant routing
+	// -----------------------------------------------------------------------
+	Context("Gap 16 — Streaming queue variant", func() {
+		It("should not create NATS StatefulSet for streaming variant", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "stream-events", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "analytics",
+					Type:        "streaming",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			// Expect an error because Strimzi/AutoMQ CRDs are not installed
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("streaming queue variant not supported"))
+
+			// Assert no NATS StatefulSet was created
+			sts := &appsv1.StatefulSet{}
+			stsErr := k8sClient.Get(ctx, types.NamespacedName{
+				Name: "stream-events", Namespace: "default",
+			}, sts)
+			Expect(errors.IsNotFound(stsErr)).To(BeTrue(),
+				"streaming variant should not create a NATS StatefulSet")
+
+			// Assert no NATS headless Service was created
+			svc := &corev1.Service{}
+			svcErr := k8sClient.Get(ctx, types.NamespacedName{
+				Name: "stream-events-headless", Namespace: "default",
+			}, svc)
+			Expect(errors.IsNotFound(svcErr)).To(BeTrue(),
+				"streaming variant should not create a NATS headless Service")
+
+			// Verify condition is set explaining the missing operator
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue)).To(Succeed())
+			var found bool
+			for _, c := range queue.Status.Conditions {
+				if c.Reason == "StreamingOperatorNotInstalled" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected StreamingOperatorNotInstalled condition")
+		})
+
+		It("should still create NATS StatefulSet for nats variant (regression guard)", func() {
+			queue := &choristerv1alpha1.ChoQueue{
+				ObjectMeta: metav1.ObjectMeta{Name: "nats-regression-queue", Namespace: "default"},
+				Spec: choristerv1alpha1.ChoQueueSpec{
+					Application: "myapp",
+					Domain:      "payments",
+					Type:        "nats",
+					Size:        "small",
+				},
+			}
+			Expect(k8sClient.Create(ctx, queue)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, queue) }()
+
+			reconciler := &ChoQueueReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: queue.Name, Namespace: queue.Namespace,
+			}, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("nats:2-alpine"))
+		})
+	})
 })

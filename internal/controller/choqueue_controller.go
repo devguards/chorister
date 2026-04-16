@@ -136,6 +136,11 @@ func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// ---- Normal Active reconciliation ----
 
+	// Branch on queue type: streaming variant uses a different backing system
+	if queue.Spec.Type == "streaming" {
+		return r.reconcileStreamingQueue(ctx, queue)
+	}
+
 	// Reconcile the NATS StatefulSet
 	if err := r.reconcileStatefulSet(ctx, queue); err != nil {
 		return ctrl.Result{}, err
@@ -181,6 +186,31 @@ func (r *ChoQueueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("Reconciled ChoQueue", "name", queue.Name, "type", queue.Spec.Type)
 	return ctrl.Result{}, nil
+}
+
+// reconcileStreamingQueue handles the streaming variant (AutoMQ / Strimzi).
+// The streaming variant does NOT deploy NATS resources. It sets a condition
+// indicating that an external streaming operator (AutoMQ / Strimzi) is
+// required and not yet installed. This keeps the controller idempotent
+// while making the unsupported state explicit.
+func (r *ChoQueueReconciler) reconcileStreamingQueue(ctx context.Context, queue *choristerv1alpha1.ChoQueue) (ctrl.Result, error) {
+	if err := r.Get(ctx, types.NamespacedName{Name: queue.Name, Namespace: queue.Namespace}, queue); err != nil {
+		return ctrl.Result{}, err
+	}
+	setCondition(&queue.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "StreamingOperatorNotInstalled",
+		Message:            "Streaming queue variant requires AutoMQ or Strimzi operator, which is not yet installed",
+		ObservedGeneration: queue.Generation,
+	})
+	queue.Status.Ready = false
+	// Lifecycle stays empty until the streaming operator is installed.
+	// Only set it to Active once reconciliation can fully proceed.
+	if err := r.Status().Update(ctx, queue); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, fmt.Errorf("streaming queue variant not supported: AutoMQ/Strimzi operator not installed")
 }
 
 // handleQueueDeletion processes the finalizer on deletion.
