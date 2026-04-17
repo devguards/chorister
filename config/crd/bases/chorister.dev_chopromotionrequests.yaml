@@ -184,6 +184,11 @@ spec:
                 - Rejected
                 - Failed
                 type: string
+              targetCluster:
+                description: |-
+                  targetCluster is the name of the registered cluster where promoted resources were applied.
+                  Empty means the promotion targeted the home cluster (single-cluster mode).
+                type: string
             type: object
         type: object
     served: true

@@ -36,6 +36,7 @@ const (
 
 // getClient retrieves the controller-runtime client from command context,
 // or builds one from kubeconfig if not injected (production path).
+// Honors --server and --kubeconfig persistent flags for multi-cluster independence.
 func getClient(cmd *cobra.Command) (client.Client, error) {
 	if c, ok := cmd.Context().Value(clientContextKey).(client.Client); ok {
 		return c, nil
@@ -48,6 +49,17 @@ func getClient(cmd *cobra.Command) (client.Client, error) {
 
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
+
+	// Honor --kubeconfig flag.
+	if kc, _ := cmd.Flags().GetString("kubeconfig"); kc != "" {
+		loadingRules.ExplicitPath = kc
+	}
+
+	// Honor --server flag to override the API server URL.
+	if server, _ := cmd.Flags().GetString("server"); server != "" {
+		configOverrides.ClusterInfo.Server = server
+	}
+
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 
 	restConfig, err := kubeConfig.ClientConfig()
@@ -66,12 +78,21 @@ func getClient(cmd *cobra.Command) (client.Client, error) {
 // This is needed for operations the controller-runtime client does not support,
 // such as streaming pod logs.
 // In tests, a fake kubernetes.Interface may be injected via the command context.
+// Honors --server and --kubeconfig persistent flags for multi-cluster independence.
 func getKubeClientset(cmd *cobra.Command) (kubernetes.Interface, error) {
 	if cs, ok := cmd.Context().Value(kubeClientsetContextKey).(kubernetes.Interface); ok {
 		return cs, nil
 	}
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
+
+	if kc, _ := cmd.Flags().GetString("kubeconfig"); kc != "" {
+		loadingRules.ExplicitPath = kc
+	}
+	if server, _ := cmd.Flags().GetString("server"); server != "" {
+		configOverrides.ClusterInfo.Server = server
+	}
+
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 
 	restConfig, err := kubeConfig.ClientConfig()

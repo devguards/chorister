@@ -79,6 +79,11 @@ type ChoPromotionRequestStatus struct {
 	// compiledWithRevision is the controller revision used during execution.
 	// +optional
 	CompiledWithRevision string `json:"compiledWithRevision,omitempty"`
+
+	// targetCluster is the name of the registered cluster where promoted resources were applied.
+	// Empty means the promotion targeted the home cluster (single-cluster mode).
+	// +optional
+	TargetCluster string `json:"targetCluster,omitempty"`
 }
 
 // +kubebuilder:object:root=true

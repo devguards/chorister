@@ -92,6 +92,10 @@ It provides sandbox-first workflow, deterministic promotion, and compliance buil
 		SilenceUsage: true,
 	}
 
+	// Persistent flags available to all subcommands.
+	root.PersistentFlags().String("server", "", "Kubernetes API server URL for the home cluster (overrides kubeconfig context)")
+	root.PersistentFlags().String("kubeconfig", "", "Path to kubeconfig file (overrides KUBECONFIG env)")
+
 	root.AddCommand(
 		newVersionCmd(),
 		newSetupCmd(),

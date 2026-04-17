@@ -41,6 +41,7 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/compiler"
+	"github.com/chorister-dev/chorister/internal/multicluster"
 )
 
 const (
@@ -51,8 +52,9 @@ const (
 // ChoClusterReconciler reconciles a ChoCluster object.
 type ChoClusterReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	AuditLogger audit.Logger
+	Scheme         *runtime.Scheme
+	AuditLogger    audit.Logger
+	ClusterClients multicluster.ClientFactory
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=choclusters,verbs=get;list;watch;create;update;patch;delete
@@ -62,6 +64,7 @@ type ChoClusterReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=chorister.dev,resources=choapplications,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
@@ -145,6 +148,9 @@ func (r *ChoClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.reconcileCertManager(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Phase 18: Reconcile multi-cluster connectivity (non-fatal, updates status only)
+	r.reconcileClusterConnectivity(ctx, cluster)
 
 	// Update status
 	cluster.Status.Phase = "Ready"
@@ -799,7 +805,7 @@ var certManagerClusterIssuerGVK = schema.GroupVersionKind{
 // ---------------------------------------------------------------------------
 
 func (r *ChoClusterReconciler) reconcileDefaultSizingTemplates(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) error {
-	if cluster.Spec.SizingTemplates != nil && len(cluster.Spec.SizingTemplates) > 0 {
+	if len(cluster.Spec.SizingTemplates) > 0 {
 		// User has already defined templates; set condition and return
 		setCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type:    "SizingTemplatesAvailable",
@@ -854,6 +860,61 @@ func (r *ChoClusterReconciler) ensureClusterNamespace(ctx context.Context, name 
 		return r.Create(ctx, ns)
 	}
 	return err
+}
+
+// reconcileClusterConnectivity refreshes the multi-cluster factory and updates
+// the ClusterConnectivity status map. Each registered cluster gets a status of
+// "Connected" (Refresh succeeded) or "Unreachable" (with reason).
+func (r *ChoClusterReconciler) reconcileClusterConnectivity(ctx context.Context, cluster *choristerv1alpha1.ChoCluster) {
+	if len(cluster.Spec.Clusters) == 0 {
+		// Single-cluster mode: clear connectivity map.
+		cluster.Status.ClusterConnectivity = nil
+		return
+	}
+
+	if r.ClusterClients == nil {
+		// Factory not injected — report all as Unknown.
+		connectivity := make(map[string]string, len(cluster.Spec.Clusters))
+		for _, entry := range cluster.Spec.Clusters {
+			connectivity[entry.Name] = "Unknown"
+		}
+		cluster.Status.ClusterConnectivity = connectivity
+		return
+	}
+
+	err := r.ClusterClients.Refresh(ctx)
+
+	connectivity := make(map[string]string, len(cluster.Spec.Clusters))
+	if err != nil {
+		// Refresh failed — mark all as Unreachable with the error.
+		for _, entry := range cluster.Spec.Clusters {
+			connectivity[entry.Name] = fmt.Sprintf("Unreachable: %v", err)
+		}
+		cluster.Status.ClusterConnectivity = connectivity
+		setCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:    "ClustersReady",
+			Status:  metav1.ConditionFalse,
+			Reason:  "RefreshFailed",
+			Message: fmt.Sprintf("Could not refresh cluster clients: %v", err),
+		})
+		return
+	}
+
+	// Refresh succeeded — verify each cluster is reachable by checking if we can get a client.
+	for _, entry := range cluster.Spec.Clusters {
+		if _, cErr := r.ClusterClients.ClientFor(ctx, entry.Name); cErr != nil {
+			connectivity[entry.Name] = fmt.Sprintf("Unreachable: %v", cErr)
+		} else {
+			connectivity[entry.Name] = "Connected"
+		}
+	}
+	cluster.Status.ClusterConnectivity = connectivity
+	setCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:    "ClustersReady",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllClustersConnected",
+		Message: fmt.Sprintf("%d cluster(s) registered and reachable", len(cluster.Spec.Clusters)),
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

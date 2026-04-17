@@ -54,6 +54,26 @@ type ChoClusterSpec struct {
 	// cloudProvider configures the cloud provider plugin for object storage via kro.
 	// +optional
 	CloudProvider *CloudProviderSpec `json:"cloudProvider,omitempty"`
+
+	// clusters defines remote clusters for multi-cluster deployments.
+	// Each entry registers a cluster with a role and a kubeconfig Secret reference.
+	// When empty, the controller operates in single-cluster mode (all resources on the home cluster).
+	// +optional
+	Clusters []ClusterRegistryEntry `json:"clusters,omitempty"`
+}
+
+// ClusterRegistryEntry defines a registered remote cluster for multi-cluster deployments.
+type ClusterRegistryEntry struct {
+	// name is the cluster identifier (e.g. "sandbox-pool", "prod-cell-1").
+	Name string `json:"name"`
+
+	// role is the cluster's purpose.
+	// +kubebuilder:validation:Enum=sandbox;production
+	Role string `json:"role"`
+
+	// secretRef is the name of a Secret in cho-system containing a 'kubeconfig' key
+	// with the kubeconfig for the remote cluster.
+	SecretRef string `json:"secretRef"`
 }
 
 // ControllerRevisionEntry defines a named controller revision with a tag.
@@ -229,6 +249,11 @@ type ChoClusterStatus struct {
 	// observabilityReady indicates whether the monitoring stack is operational.
 	// +optional
 	ObservabilityReady bool `json:"observabilityReady,omitempty"`
+
+	// clusterConnectivity tracks the status of each registered remote cluster.
+	// Key is the cluster name, value is the connectivity status (e.g. "Connected", "Unreachable").
+	// +optional
+	ClusterConnectivity map[string]string `json:"clusterConnectivity,omitempty"`
 }
 
 // +kubebuilder:object:root=true

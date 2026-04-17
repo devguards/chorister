@@ -1,0 +1,12 @@
+apiVersion: chorister.dev/v1alpha1
+kind: ChoCluster
+metadata:
+  name: scen13-cluster-config
+spec:
+  clusters:
+    - name: sandbox-pool
+      role: sandbox
+      secretRef: sandbox-pool-kubeconfig
+    - name: prod-cell-1
+      role: production
+      secretRef: prod-cell-1-kubeconfig

@@ -776,6 +776,129 @@ HA strategy is Application-level policy. `ha = true` on a component = HA within 
 
 **Growth path:** Phase 1 (MVP): single-cluster → Phase 2: hot-cold (same region, cross-cloud) → Phase 3: active-active → Phase 4: geographic distribution.
 
+### Multi-cluster topology: Home Cluster + Remote Clients (Argo CD model)
+
+One **home cluster** holds all chorister CRDs and runs the controller. The controller uses stored kubeconfig Secrets to reconcile workload resources onto remote clusters (sandbox clusters, production clusters, cell clusters). The CLI always talks to the home cluster.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Home Cluster                                               │
+│                                                             │
+│  cho-system/                                                │
+│    All chorister CRDs (ChoApplication, ChoCompute, etc.)    │
+│    chorister controller                                     │
+│    Secret: sandbox-pool-kubeconfig                          │
+│    Secret: prod-cell-1-kubeconfig                           │
+│                                                             │
+│  Controller reconciles:                                     │
+│    CRDs (home etcd) → resources on target cluster           │
+│    using the appropriate remote K8s client                  │
+└──────────┬──────────────────────────┬───────────────────────┘
+           │ remote K8s API            │ remote K8s API
+      ┌────▼──────┐              ┌─────▼──────┐
+      │ Sandbox    │              │ Production │
+      │ Cluster    │              │ Cluster    │
+      └───────────┘              └────────────┘
+```
+
+### Why this model
+
+| Criterion | Home + Remote Clients | Leader + Agent (pull) | Symmetric + Sync |
+|---|---|---|---|
+| Code change from single-cluster | **Small** — swap which `client.Client` applies workloads | Large — split every reconciler into plan + apply | Large — CRD replication + distributed coordination |
+| New components | None | Agent binary per cluster | Sync layer |
+| CLI change | Config file only | Config file only | User must pick cluster (confusing) |
+| UX clarity | **One endpoint, always** | One endpoint | Ambiguous |
+| Failure modes | Simple (home down = no new changes, workloads keep running) | Complex (sync lag, status propagation delay) | Complex (split-brain) |
+| Existing precedent | Argo CD, Rancher, Crossplane | Flux, Argo Agent | K8s Federation v1 (deprecated) |
+
+**Rejected alternatives:**
+- **Leader + Agent (pull-based):** Requires splitting every reconciler into "plan" (leader) and "apply" (agent) halves, a new agent binary, and an intent/status sync protocol. Significant code change for marginal network security benefit.
+- **Symmetric controllers + CRD sync:** Each cluster runs a full controller and holds its own CRDs. Users must know which cluster to target. Split-brain risk. kubectl-context confusion unsolved. Most code change for least clarity.
+
+### How it works
+
+1. **Cluster registry in ChoCluster.** Platform admin registers clusters with roles and kubeconfig Secrets:
+
+    ```yaml
+    apiVersion: chorister.dev/v1alpha1
+    kind: ChoCluster
+    metadata:
+      name: cluster-config
+    spec:
+      clusters:
+        - name: sandbox-pool
+          role: sandbox
+          secretRef: sandbox-pool-kubeconfig
+        - name: prod-cell-1
+          role: production
+          secretRef: prod-cell-1-kubeconfig
+        - name: prod-cell-2
+          role: production
+          secretRef: prod-cell-2-kubeconfig
+    ```
+
+2. **Controller uses a cluster-aware client factory.** Reconcilers read CRDs from the home cluster (always `r.Client`) and write workload resources to the target cluster's client. The target is derived from context: sandbox CRDs target the sandbox cluster, promoted production resources target the production cluster.
+
+    ```go
+    type ClusterClientFactory interface {
+        ClientFor(clusterName string) client.Client  // remote cluster
+        Local() client.Client                         // home cluster (CRDs)
+    }
+    ```
+
+3. **CLI always talks to the home cluster.** `chorister login` stores the home cluster endpoint in `~/.config/chorister/config`. All chorister commands use this config, **never `~/.kube/config`**. kubectl continues to work independently for debugging any cluster.
+
+    ```yaml
+    # ~/.config/chorister/config
+    current-context: production
+    contexts:
+      production:
+        server: https://home-cluster-api:6443
+        token: <from chorister login>
+    ```
+
+4. **Cell architecture falls out naturally.** Register additional production clusters as cells. The controller routes workloads to the appropriate cell based on Application policy or domain assignment.
+
+### CLI decoupled from kubectl context
+
+This is the key UX win. kubectl context and chorister endpoint are independent:
+
+```bash
+# kubectl points to sandbox cluster (for debugging)
+$ kubectl config current-context
+kind-sandbox-dev
+
+# chorister always points to home cluster (set once via login)
+$ chorister login https://home-api:6443
+$ chorister apply --domain payments --sandbox alice   # hits home cluster
+$ chorister promote payments                           # hits home cluster
+$ chorister status payments                            # hits home cluster
+```
+
+No ambient state confusion. No risk of `chorister` accidentally targeting the wrong cluster because someone ran `kubectl config use-context`.
+
+### SPOF mitigation
+
+The home cluster being a single point of management (not a SPOF for workloads):
+- If home is down, workloads on remote clusters **keep running** (K8s resources are already applied, operators continue reconciling).
+- Only new applies/promotions are blocked — same as any control plane outage.
+- Home cluster runs HA (multi-replica controller with leader election, which already exists).
+- etcd backup of the home cluster captures all chorister state.
+
+### Implementation approach
+
+| Change | Scope | Phase |
+|---|---|---|
+| Add `clusters` field to ChoCluster spec | CRD schema | Phase 2 |
+| `ClusterClientFactory` — builds remote clients from kubeconfig Secrets | New package (~100 LOC) | Phase 2 |
+| Inject factory into reconcilers, use `ClientFor()` for workload writes | Reconciler plumbing | Phase 2 |
+| `chorister login` stores endpoint in `~/.config/chorister/config` | CLI config | Phase 2 |
+| CLI reads config file instead of `~/.kube/config` | CLI client.go | Phase 2 |
+| Kubeconfig Secret rotation (watch + reconnect) | Controller lifecycle | Phase 2 |
+
+MVP (Phase 1) remains single-cluster. The controller uses `r.Client` for everything. Phase 2 introduces the factory; single-cluster deployments are the degenerate case where the factory returns `r.Client` for all clusters.
+
 ---
 
 ## 19. Implementation Timeline
@@ -1097,7 +1220,7 @@ chorister ships sensible defaults in the CRD (matching the `small` tier above). 
 | 14 | Database | StackGres. Patroni HA, PgBouncer, automated backups. |
 | 15 | Queue | NATS (standard) + AutoMQ/Strimzi (streaming). |
 | 16 | Cache | Dragonfly (Redis-compatible). |
-| 17 | Multi-cluster | Single cluster for MVP. Hot-cold then active-active post-MVP. |
+| 17 | Multi-cluster | Home Cluster + Remote Clients (Argo CD model). All CRDs on home cluster, controller uses remote K8s clients for workload clusters. CLI always targets home cluster (decoupled from kubectl context). Single cluster for MVP; factory introduced in Phase 2. |
 | 18 | CI/CD | Out of scope. chorister promotes images, not code. |
 | 19 | GitOps | Push-based MVP. Exportable Blueprints for ArgoCD/Flux. |
 | 20 | Stateful deletion safety | Archive lifecycle: Archived → 30-day retention → explicit delete. No accidental data loss. |

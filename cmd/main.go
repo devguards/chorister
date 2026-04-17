@@ -43,6 +43,7 @@ import (
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
 	"github.com/chorister-dev/chorister/internal/audit"
 	"github.com/chorister-dev/chorister/internal/controller"
+	"github.com/chorister-dev/chorister/internal/multicluster"
 	webhookv1alpha1 "github.com/chorister-dev/chorister/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -219,6 +220,12 @@ func main() {
 		setupLog.Info("Audit logging disabled (noop)")
 	}
 
+	// Initialize multi-cluster client factory.
+	clusterClients := multicluster.NewFactory(multicluster.FactoryConfig{
+		Local:  mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	})
+
 	if err := (&controller.ChoApplicationReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
@@ -283,23 +290,26 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ChoPromotionRequestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ClusterClients: clusterClients,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoPromotionRequest")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoClusterReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		AuditLogger: auditLogger,
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		AuditLogger:    auditLogger,
+		ClusterClients: clusterClients,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoCluster")
 		os.Exit(1)
 	}
 	if err := (&controller.ChoSandboxReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ClusterClients: clusterClients,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "ChoSandbox")
 		os.Exit(1)

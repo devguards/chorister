@@ -69,6 +69,36 @@ spec:
                 required:
                 - provider
                 type: object
+              clusters:
+                description: |-
+                  clusters defines remote clusters for multi-cluster deployments.
+                  Each entry registers a cluster with a role and a kubeconfig Secret reference.
+                  When empty, the controller operates in single-cluster mode (all resources on the home cluster).
+                items:
+                  description: ClusterRegistryEntry defines a registered remote cluster
+                    for multi-cluster deployments.
+                  properties:
+                    name:
+                      description: name is the cluster identifier (e.g. "sandbox-pool",
+                        "prod-cell-1").
+                      type: string
+                    role:
+                      description: role is the cluster's purpose.
+                      enum:
+                      - sandbox
+                      - production
+                      type: string
+                    secretRef:
+                      description: |-
+                        secretRef is the name of a Secret in cho-system containing a 'kubeconfig' key
+                        with the kubeconfig for the remote cluster.
+                      type: string
+                  required:
+                  - name
+                  - role
+                  - secretRef
+                  type: object
+                type: array
               controllerRevision:
                 description: controllerRevision is the current stable controller revision
                   name.
@@ -281,6 +311,13 @@ spec:
               cisBenchmark:
                 description: cisBenchmark stores the latest kube-bench results.
                 type: string
+              clusterConnectivity:
+                additionalProperties:
+                  type: string
+                description: |-
+                  clusterConnectivity tracks the status of each registered remote cluster.
+                  Key is the cluster name, value is the connectivity status (e.g. "Connected", "Unreachable").
+                type: object
               conditions:
                 description: conditions represent the current state of the ChoCluster.
                 items:

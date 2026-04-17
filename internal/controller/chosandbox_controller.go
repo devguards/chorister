@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/multicluster"
 )
 
 const (
@@ -50,7 +51,8 @@ const (
 // ChoSandboxReconciler reconciles a ChoSandbox object
 type ChoSandboxReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	ClusterClients multicluster.ClientFactory
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chosandboxes,verbs=get;list;watch;create;update;patch;delete
@@ -133,13 +135,16 @@ func (r *ChoSandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// Ensure sandbox namespace exists
-	if err := r.ensureSandboxNamespace(ctx, sandbox, nsName); err != nil {
+	// Determine the target cluster client for workload resources.
+	targetClient, targetClusterName := r.resolveTargetClient(ctx)
+
+	// Ensure sandbox namespace exists on the target cluster.
+	if err := r.ensureSandboxNamespace(ctx, sandbox, nsName, targetClient); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Ensure default-deny NetworkPolicy in sandbox namespace
-	if err := r.ensureSandboxDenyPolicy(ctx, sandbox, nsName); err != nil {
+	// Ensure default-deny NetworkPolicy in sandbox namespace on the target cluster.
+	if err := r.ensureSandboxDenyPolicy(ctx, sandbox, nsName, targetClient); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -195,6 +200,7 @@ func (r *ChoSandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Update status
 	sandbox.Status.Namespace = nsName
+	sandbox.Status.Cluster = targetClusterName
 	if sandbox.Status.Phase != "BudgetExceeded" && sandbox.Status.Phase != "Destroying" {
 		sandbox.Status.Phase = "Active"
 	}
@@ -213,9 +219,43 @@ func (r *ChoSandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{RequeueAfter: sandboxRequeueInterval}, nil
 }
 
-func (r *ChoSandboxReconciler) ensureSandboxNamespace(ctx context.Context, sandbox *choristerv1alpha1.ChoSandbox, nsName string) error {
+// resolveTargetClient returns the client for sandbox workloads and the cluster name.
+// If a sandbox-role cluster is registered, it returns that remote client.
+// Otherwise it falls back to the local (home) client with an empty cluster name.
+func (r *ChoSandboxReconciler) resolveTargetClient(ctx context.Context) (client.Client, string) {
+	if r.ClusterClients == nil {
+		return r.Client, ""
+	}
+	c, err := r.ClusterClients.ClientForRole(ctx, multicluster.ClusterRoleSandbox)
+	if err != nil {
+		return r.Client, ""
+	}
+	// If the returned client is the same as local, we're in single-cluster mode.
+	if c == r.ClusterClients.Local() {
+		return r.Client, ""
+	}
+	// Find the cluster name for the sandbox role.
+	name := r.resolveClusterNameForRole(ctx, multicluster.ClusterRoleSandbox)
+	return c, name
+}
+
+// resolveClusterNameForRole looks up the ChoCluster to find the first cluster name with the given role.
+func (r *ChoSandboxReconciler) resolveClusterNameForRole(ctx context.Context, role multicluster.ClusterRole) string {
+	clusterList := &choristerv1alpha1.ChoClusterList{}
+	if err := r.List(ctx, clusterList); err != nil || len(clusterList.Items) == 0 {
+		return ""
+	}
+	for _, entry := range clusterList.Items[0].Spec.Clusters {
+		if entry.Role == string(role) {
+			return entry.Name
+		}
+	}
+	return ""
+}
+
+func (r *ChoSandboxReconciler) ensureSandboxNamespace(ctx context.Context, sandbox *choristerv1alpha1.ChoSandbox, nsName string, targetClient client.Client) error {
 	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: nsName}, ns)
+	err := targetClient.Get(ctx, types.NamespacedName{Name: nsName}, ns)
 	if errors.IsNotFound(err) {
 		ns = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -227,12 +267,12 @@ func (r *ChoSandboxReconciler) ensureSandboxNamespace(ctx context.Context, sandb
 				},
 			},
 		}
-		return r.Create(ctx, ns)
+		return targetClient.Create(ctx, ns)
 	}
 	return err
 }
 
-func (r *ChoSandboxReconciler) ensureSandboxDenyPolicy(ctx context.Context, sandbox *choristerv1alpha1.ChoSandbox, nsName string) error {
+func (r *ChoSandboxReconciler) ensureSandboxDenyPolicy(ctx context.Context, sandbox *choristerv1alpha1.ChoSandbox, nsName string, targetClient client.Client) error {
 	policyName := "default-deny"
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
@@ -266,23 +306,25 @@ func (r *ChoSandboxReconciler) ensureSandboxDenyPolicy(ctx context.Context, sand
 	}
 
 	existing := &networkingv1.NetworkPolicy{}
-	err := r.Get(ctx, types.NamespacedName{Name: policyName, Namespace: nsName}, existing)
+	err := targetClient.Get(ctx, types.NamespacedName{Name: policyName, Namespace: nsName}, existing)
 	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+		return targetClient.Create(ctx, desired)
 	}
 	return err
 }
 
 func (r *ChoSandboxReconciler) deleteSandboxNamespace(ctx context.Context, nsName string) error {
+	// Resolve the target client to delete namespace on the correct cluster.
+	targetClient, _ := r.resolveTargetClient(ctx)
 	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: nsName}, ns)
+	err := targetClient.Get(ctx, types.NamespacedName{Name: nsName}, ns)
 	if errors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return r.Delete(ctx, ns)
+	return targetClient.Delete(ctx, ns)
 }
 
 // lookupApplication finds the parent ChoApplication in the sandbox's namespace.

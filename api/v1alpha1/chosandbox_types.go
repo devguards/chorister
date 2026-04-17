@@ -59,6 +59,11 @@ type ChoSandboxStatus struct {
 	// estimatedMonthlyCost is the estimated monthly cost of sandbox resources.
 	// +optional
 	EstimatedMonthlyCost string `json:"estimatedMonthlyCost,omitempty"`
+
+	// cluster is the name of the registered cluster where this sandbox was created.
+	// Empty means the sandbox runs on the home cluster (single-cluster mode).
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
 }
 
 // +kubebuilder:object:root=true

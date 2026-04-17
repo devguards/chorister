@@ -81,6 +81,11 @@ spec:
           status:
             description: ChoSandboxStatus defines the observed state of ChoSandbox.
             properties:
+              cluster:
+                description: |-
+                  cluster is the name of the registered cluster where this sandbox was created.
+                  Empty means the sandbox runs on the home cluster (single-cluster mode).
+                type: string
               conditions:
                 description: conditions represent the current state of the sandbox.
                 items:

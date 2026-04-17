@@ -33,6 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	choristerv1alpha1 "github.com/chorister-dev/chorister/api/v1alpha1"
+	"github.com/chorister-dev/chorister/internal/multicluster"
 	"github.com/chorister-dev/chorister/internal/scanning"
 	"github.com/chorister-dev/chorister/internal/validation"
 )
@@ -40,8 +41,9 @@ import (
 // ChoPromotionRequestReconciler reconciles a ChoPromotionRequest object
 type ChoPromotionRequestReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Scanner scanning.Scanner
+	Scheme         *runtime.Scheme
+	Scanner        scanning.Scanner
+	ClusterClients multicluster.ClientFactory
 }
 
 // +kubebuilder:rbac:groups=chorister.dev,resources=chopromotionrequests,verbs=get;list;watch;create;update;patch;delete
@@ -212,7 +214,10 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 		sandboxNs := SandboxNamespace(pr.Spec.Application, pr.Spec.Domain, pr.Spec.Sandbox)
 		prodNs := fmt.Sprintf("%s-%s", pr.Spec.Application, pr.Spec.Domain)
 
-		if err := r.copyResources(ctx, sandboxNs, prodNs, pr.Spec.Application, pr.Spec.Domain); err != nil {
+		// Resolve the production cluster client.
+		prodClient, targetClusterName := r.resolveProductionClient(ctx)
+
+		if err := r.copyResources(ctx, sandboxNs, prodNs, pr.Spec.Application, pr.Spec.Domain, prodClient); err != nil {
 			pr.Status.Phase = "Failed"
 			setCondition(&pr.Status.Conditions, metav1.Condition{
 				Type:               "Failed",
@@ -239,6 +244,7 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 
 		pr.Status.Phase = "Completed"
 		pr.Status.CompiledWithRevision = pr.Spec.CompiledWithRevision
+		pr.Status.TargetCluster = targetClusterName
 		setCondition(&pr.Status.Conditions, metav1.Condition{
 			Type:               "Completed",
 			Status:             metav1.ConditionTrue,
@@ -250,14 +256,15 @@ func (r *ChoPromotionRequestReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Promotion completed", "name", pr.Name, "sandbox", sandboxNs, "production", prodNs)
+		log.Info("Promotion completed", "name", pr.Name, "sandbox", sandboxNs, "production", prodNs, "targetCluster", targetClusterName)
 	}
 
 	return ctrl.Result{}, nil
 }
 
 // copyResources copies chorister CRDs from sandbox namespace to production namespace.
-func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandboxNs, prodNs, app, domain string) error {
+// The prodClient is used to write to the production cluster (may be remote or local).
+func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandboxNs, prodNs, app, domain string, prodClient client.Client) error {
 	// Copy ChoCompute resources
 	computeList := &choristerv1alpha1.ChoComputeList{}
 	if err := r.List(ctx, computeList, client.InNamespace(sandboxNs)); err != nil {
@@ -265,7 +272,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range computeList.Items {
 		src := &computeList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoCompute",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoCompute", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoCompute{
 					ObjectMeta: metav1.ObjectMeta{
@@ -292,7 +299,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range dbList.Items {
 		src := &dbList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoDatabase",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoDatabase", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoDatabase{
 					ObjectMeta: metav1.ObjectMeta{
@@ -319,7 +326,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range queueList.Items {
 		src := &queueList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoQueue",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoQueue", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoQueue{
 					ObjectMeta: metav1.ObjectMeta{
@@ -346,7 +353,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range cacheList.Items {
 		src := &cacheList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoCache",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoCache", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoCache{
 					ObjectMeta: metav1.ObjectMeta{
@@ -373,7 +380,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range networkList.Items {
 		src := &networkList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoNetwork",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoNetwork", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoNetwork{
 					ObjectMeta: metav1.ObjectMeta{
@@ -400,7 +407,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 	}
 	for i := range storageList.Items {
 		src := &storageList.Items[i]
-		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoStorage",
+		if err := r.ensureResourceInNamespace(ctx, prodNs, src.Name, "ChoStorage", prodClient,
 			func() client.Object {
 				return &choristerv1alpha1.ChoStorage{
 					ObjectMeta: metav1.ObjectMeta{
@@ -427,6 +434,7 @@ func (r *ChoPromotionRequestReconciler) copyResources(ctx context.Context, sandb
 func (r *ChoPromotionRequestReconciler) ensureResourceInNamespace(
 	ctx context.Context,
 	ns, name, kind string,
+	targetClient client.Client,
 	newFn func() client.Object,
 	updateFn func(client.Object),
 ) error {
@@ -437,70 +445,70 @@ func (r *ChoPromotionRequestReconciler) ensureResourceInNamespace(
 	switch kind {
 	case "ChoCompute":
 		obj := &choristerv1alpha1.ChoCompute{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	case "ChoDatabase":
 		obj := &choristerv1alpha1.ChoDatabase{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	case "ChoQueue":
 		obj := &choristerv1alpha1.ChoQueue{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	case "ChoCache":
 		obj := &choristerv1alpha1.ChoCache{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	case "ChoNetwork":
 		obj := &choristerv1alpha1.ChoNetwork{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	case "ChoStorage":
 		obj := &choristerv1alpha1.ChoStorage{}
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
+		err := targetClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, obj)
 		if errors.IsNotFound(err) {
-			return r.Create(ctx, newFn())
+			return targetClient.Create(ctx, newFn())
 		}
 		if err != nil {
 			return err
 		}
 		updateFn(obj)
-		return r.Update(ctx, obj)
+		return targetClient.Update(ctx, obj)
 	}
 
 	return fmt.Errorf("unsupported resource kind: %s", kind)
@@ -844,6 +852,40 @@ func (r *ChoPromotionRequestReconciler) getArchiveRetention(ctx context.Context,
 		return defaultRetention
 	}
 	return duration
+}
+
+// resolveProductionClient returns the client for production workloads and the cluster name.
+// If a production-role cluster is registered, it returns that remote client.
+// Otherwise it falls back to the local (home) client with an empty cluster name.
+func (r *ChoPromotionRequestReconciler) resolveProductionClient(ctx context.Context) (client.Client, string) {
+	if r.ClusterClients == nil {
+		return r.Client, ""
+	}
+	c, err := r.ClusterClients.ClientForRole(ctx, multicluster.ClusterRoleProduction)
+	if err != nil {
+		return r.Client, ""
+	}
+	// If the returned client is the same as local, we're in single-cluster mode.
+	if c == r.ClusterClients.Local() {
+		return r.Client, ""
+	}
+	// Find the cluster name for the production role.
+	name := r.resolveClusterNameForRole(ctx, multicluster.ClusterRoleProduction)
+	return c, name
+}
+
+// resolveClusterNameForRole looks up the ChoCluster to find the first cluster name with the given role.
+func (r *ChoPromotionRequestReconciler) resolveClusterNameForRole(ctx context.Context, role multicluster.ClusterRole) string {
+	clusterList := &choristerv1alpha1.ChoClusterList{}
+	if err := r.List(ctx, clusterList); err != nil || len(clusterList.Items) == 0 {
+		return ""
+	}
+	for _, entry := range clusterList.Items[0].Spec.Clusters {
+		if entry.Role == string(role) {
+			return entry.Name
+		}
+	}
+	return ""
 }
 
 // SetupWithManager sets up the controller with the Manager.

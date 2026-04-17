@@ -30,6 +30,86 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-chorister-dev-v1alpha1-chocache
+  failurePolicy: Fail
+  name: vchocache-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chocaches
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chocluster
+  failurePolicy: Fail
+  name: vchocluster-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - choclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chocompute
+  failurePolicy: Fail
+  name: vchocompute-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chocomputes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chodatabase
+  failurePolicy: Fail
+  name: vchodatabase-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chodatabases
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-chorister-dev-v1alpha1-chodomainmembership
   failurePolicy: Fail
   name: vchodomainmembership-v1alpha1.kb.io
@@ -83,4 +163,84 @@ webhooks:
     - UPDATE
     resources:
     - chopromotionrequests
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-choqueue
+  failurePolicy: Fail
+  name: vchoqueue-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - choqueues
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chosandbox
+  failurePolicy: Fail
+  name: vchosandbox-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chosandboxes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chostorage
+  failurePolicy: Fail
+  name: vchostorage-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chostorages
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-chorister-dev-v1alpha1-chovulnerabilityreport
+  failurePolicy: Fail
+  name: vchovulnerabilityreport-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - chorister.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - chovulnerabilityreports
   sideEffects: None
